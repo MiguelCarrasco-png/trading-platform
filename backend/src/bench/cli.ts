@@ -29,7 +29,8 @@ Offline — no credentials, no network, no broker:
 Common processing options (fixture, replay):
   --strategy none|null|quote_imbalance|minute_reversal|pairs_trading  --strategy-count 1
   --strategy-params '{"imbalanceThreshold":0.6}'  --sink null|sim  --journal-latency-ms 0
-  --journal-fail-every 0  --invalid-data pass|quarantine  --pacing max|paced  --speed 1
+  --journal-fail-every 0  --invalid-data pass|quarantine (default: MARKET_DATA_INVALID_POLICY)
+  --pacing max|paced  --speed 1
   --replay-burst startMs:durationMs:multiplier  --warmup-frames 500  --repetitions 3
   --sample 0.01  --detail frame|stage  --deadline-ms 10  --out <artifacts base dir>
 

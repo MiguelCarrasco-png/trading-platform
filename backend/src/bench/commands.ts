@@ -50,6 +50,7 @@ import {
 import { writeComparison, writeReport, type MetricsFile, type OverheadReport, type OverheadConfigResult } from "./report";
 import { Args, ArgError } from "./args";
 import type { ProbeSnapshot } from "../core/telemetry/latencyProbe";
+import { env } from "../config/env";
 
 // ------------------------------------------------------------------
 // Shared helpers
@@ -118,7 +119,7 @@ function processingOptions(args: Args, symbols: string[]): ProcessingOptions {
     sink: args.choice<BenchSinkKind>("sink", ["null", "sim"], "null"),
     journalLatencyMs: args.num("journal-latency-ms", 0, { min: 0, max: 10_000 }),
     journalFailEvery: args.num("journal-fail-every", 0, { min: 0, integer: true }),
-    invalidData: args.choice("invalid-data", ["pass", "quarantine"] as const, "pass"),
+    invalidData: args.choice("invalid-data", ["pass", "quarantine"] as const, env.marketDataInvalidPolicy),
     pacing: pacingMode === "max" ? { mode: "max" } : { mode: "paced", speed, bursts: replayBursts },
     warmupFrames: args.num("warmup-frames", 500, { min: 0, integer: true }),
     repetitions: args.num("repetitions", 3, { min: 1, max: 50, integer: true }),

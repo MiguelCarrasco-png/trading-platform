@@ -220,7 +220,7 @@ export async function bootstrapRuntime(config: RuntimeConfig): Promise<void> {
   // replay of cached bars through the same events.
   const hasDataKeys = !!(env.alpacaDataKey && env.alpacaDataSecret);
   const marketDataAdapter = hasDataKeys
-    ? new AlpacaMarketDataAdapter(eventBus, mode, latency?.adapterOptions())
+    ? new AlpacaMarketDataAdapter(eventBus, mode, { invalidData: env.marketDataInvalidPolicy, ...latency?.adapterOptions() })
     : new ReplayBarFeed(eventBus, mode, new SupabaseBarCache(), replayWindow());
 
   // Orders: a sim book fills locally on the next bar; the alpaca targets send

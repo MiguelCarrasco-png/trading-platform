@@ -37,6 +37,7 @@ import { NullExecutionSink, InMemoryOrderJournal, type InMemoryJournalOptions } 
 import { buildBenchStrategies, type BenchStrategySpec } from "./strategies";
 import { newId } from "../utils/ids";
 import { nowMs } from "../utils/time";
+import { env } from "../config/env";
 import type { LatencyProbe, MarketDataObserver } from "../core/telemetry/latencyProbe";
 import type { FrameRecord } from "../core/telemetry/frameRecorder";
 import type { IExecutionSink } from "../core/execution/IExecutionSink";
@@ -58,6 +59,7 @@ export interface BenchEngineOptions {
   strategy: BenchStrategySpec;
   sink: BenchSinkKind;
   journal?: InMemoryJournalOptions;
+  /** Defaults to the runtime's policy (MARKET_DATA_INVALID_POLICY). */
   invalidData?: "pass" | "quarantine";
   /** Omit for the uninstrumented ("disabled") configuration. */
   probe?: LatencyProbe;
@@ -199,7 +201,7 @@ export function buildBenchEngine(opts: BenchEngineOptions): BenchEngine {
     url: opts.adapterUrl,
     probe,
     observers: opts.observers,
-    invalidData: opts.invalidData ?? "pass",
+    invalidData: opts.invalidData ?? env.marketDataInvalidPolicy,
   });
 
   return {

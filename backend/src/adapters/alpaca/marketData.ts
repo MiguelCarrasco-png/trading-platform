@@ -57,10 +57,11 @@ export interface MarketDataAdapterOptions {
   /** Passive observers (e.g. a frame recorder). Inbound frames only — never the auth frame. */
   observers?: MarketDataObserver[];
   /**
-   * What happens to a quote/trade/bar that fails validation. "pass" (default)
-   * publishes it exactly as before; "quarantine" drops "reject"-severity
-   * messages before they reach state or strategies. Either way issues are
-   * counted when a probe is attached.
+   * What happens to a quote/trade/bar that fails validation. "pass" (the class
+   * default) publishes it unchanged; "quarantine" drops "reject"-severity
+   * messages — one-sided or crossed quotes, non-positive prices, unparseable
+   * timestamps — before they reach state, marks or strategies. Trading
+   * runtimes quarantine by default (MARKET_DATA_INVALID_POLICY).
    */
   invalidData?: "pass" | "quarantine";
 }
@@ -81,6 +82,8 @@ export class AlpacaMarketDataAdapter {
   private readonly probe?: MarketDataProbe;
   private readonly observers: MarketDataObserver[];
   private readonly quarantine: boolean;
+  /** Messages dropped by quarantine, by "<kind>.<issue code>". */
+  private readonly quarantined = new Map<string, number>();
   private readonly url?: string;
 
   constructor(
@@ -198,6 +201,11 @@ export class AlpacaMarketDataAdapter {
     this.isConnected = false;
     this._lifecycle("disconnect_requested");
     logger.info("AlpacaMarketDataAdapter: disconnected");
+  }
+
+  /** Messages dropped by the quarantine policy so far, by "<kind>.<issue code>". */
+  quarantineCounts(): Record<string, number> {
+    return Object.fromEntries(this.quarantined);
   }
 
   /**
@@ -358,7 +366,7 @@ export class AlpacaMarketDataAdapter {
     if (probe && frame && !probe.stageDetail) {
       // Frame detail: count and age the event without reading the clock.
       const issue = validate(raw);
-      const quarantined = this.quarantine && issue?.severity === "reject";
+      const quarantined = this._shouldDrop(kind, raw, issue);
       probe.marketEventLite(frame, kind, typeof raw["t"] === "string" ? raw["t"] : "", issue, quarantined);
       if (quarantined) return;
       const event = build();
@@ -368,7 +376,7 @@ export class AlpacaMarketDataAdapter {
     }
     const normStartNs = probe ? probe.now() : 0n;
     const issue = validate(raw);
-    const quarantined = this.quarantine && issue?.severity === "reject";
+    const quarantined = this._shouldDrop(kind, raw, issue);
     const event = quarantined ? null : build();
     if (!probe || !frame) {
       if (event) this.eventBus.publish(event);
@@ -386,6 +394,24 @@ export class AlpacaMarketDataAdapter {
     const dispatchStart = probe.now();
     this.eventBus.publish(event);
     probe.dispatched(traceId, dispatchStart, probe.now());
+  }
+
+  /**
+   * True when the policy drops this message. Drops are counted, and logged at
+   * the 1st, 10th, 100th, ... occurrence of each kind/code so a feed that
+   * misbehaves all day stays visible without flooding the log.
+   */
+  private _shouldDrop(kind: MarketEventKind, raw: Record<string, unknown>, issue: MarketDataIssue | null): boolean {
+    if (!this.quarantine || issue?.severity !== "reject") return false;
+    const key = `${kind}.${issue.code}`;
+    const n = (this.quarantined.get(key) ?? 0) + 1;
+    this.quarantined.set(key, n);
+    if (Number.isInteger(Math.log10(n))) {
+      logger.warn("AlpacaMarketDataAdapter: dropped unusable market data", {
+        kind, issue: issue.code, symbol: raw["S"], count: n,
+      });
+    }
+    return true;
   }
 
   private _lifecycle(kind: StreamLifecycleKind, detail?: Record<string, unknown>): void {

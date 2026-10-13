@@ -54,7 +54,7 @@ export async function captureCommand(args: Args): Promise<string> {
   const sample = args.num("sample", 0.01, { min: 0, max: 1 });
   const detail = args.choice("detail", ["frame", "stage"] as const, "frame");
   const deadlineMs = args.num("deadline-ms", 10, { min: 0 });
-  const invalidData = args.choice("invalid-data", ["pass", "quarantine"] as const, "pass");
+  const invalidData = args.choice("invalid-data", ["pass", "quarantine"] as const, env.marketDataInvalidPolicy);
   const progressS = args.num("progress-s", 60, { min: 5 });
   const base = args.optStr("out") ?? defaultArtifactsBase();
   args.assertAllUsed();
