@@ -8,8 +8,11 @@
  * quotes, trades, spreads, midprices, returns, and strategy-specific values.
  *
  * Design choices:
- * - Uses a plain array (deque-style access) for simplicity.
- * - Eviction happens on every push — acceptable at the initial scale.
+ * - A plain array with a head index: eviction advances the head, and the
+ *   evicted prefix is dropped in bulk once it is at least half the array, so
+ *   each item is copied O(1) times on average instead of the whole window
+ *   being copied on every evicting push.
+ * - Eviction happens on every push.
  * - Fully generic: works with any value type T.
  *
  * Inputs:  windowMs (duration), push(TimedValue<T>) calls.
@@ -24,8 +27,14 @@ export interface TimedValue<T> {
   value: T;
 }
 
+/** Dead prefix length below which compaction is not worth a copy. */
+const COMPACT_MIN = 32;
+
 export class RollingTimeWindow<T> {
+  /** Backing store. Live items are items[head..]; read them through the accessors. */
   protected items: TimedValue<T>[] = [];
+  /** Index of the oldest live item in `items`. */
+  protected head = 0;
 
   /**
    * Creates a new rolling time window.
@@ -54,17 +63,24 @@ export class RollingTimeWindow<T> {
    */
   evict(nowTs: number): void {
     const cutoff = nowTs - this.windowMs;
+    const items = this.items;
     // Fast path: if the oldest entry is still within the window, nothing to do
-    if (this.items.length === 0 || this.items[0].ts >= cutoff) return;
+    if (this.head >= items.length || items[this.head].ts >= cutoff) return;
     // Binary search for the first index that is within the window
-    let lo = 0;
-    let hi = this.items.length;
+    let lo = this.head;
+    let hi = items.length;
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
-      if (this.items[mid].ts < cutoff) lo = mid + 1;
+      if (items[mid].ts < cutoff) lo = mid + 1;
       else hi = mid;
     }
-    this.items = this.items.slice(lo);
+    this.head = lo;
+    if (lo === items.length) {
+      this.items = [];
+      this.head = 0;
+    } else if (lo >= COMPACT_MIN && lo * 2 >= items.length) {
+      this._compact();
+    }
   }
 
   /**
@@ -72,6 +88,7 @@ export class RollingTimeWindow<T> {
    * @returns Readonly array of TimedValue<T>
    */
   getItems(): readonly TimedValue<T>[] {
+    this._compact();
     return this.items;
   }
 
@@ -80,7 +97,7 @@ export class RollingTimeWindow<T> {
    * @returns Latest TimedValue<T> or undefined
    */
   getLatest(): TimedValue<T> | undefined {
-    return this.items[this.items.length - 1];
+    return this.head < this.items.length ? this.items[this.items.length - 1] : undefined;
   }
 
   /**
@@ -88,7 +105,7 @@ export class RollingTimeWindow<T> {
    * @returns Oldest TimedValue<T> or undefined
    */
   getOldest(): TimedValue<T> | undefined {
-    return this.items[0];
+    return this.items[this.head];
   }
 
   /**
@@ -96,7 +113,7 @@ export class RollingTimeWindow<T> {
    * @returns Item count
    */
   size(): number {
-    return this.items.length;
+    return this.items.length - this.head;
   }
 
   /**
@@ -104,7 +121,7 @@ export class RollingTimeWindow<T> {
    * @returns boolean
    */
   isEmpty(): boolean {
-    return this.items.length === 0;
+    return this.items.length === this.head;
   }
 
   /**
@@ -112,7 +129,10 @@ export class RollingTimeWindow<T> {
    * @returns Array of T values ordered oldest → newest
    */
   getValues(): T[] {
-    return this.items.map((i) => i.value);
+    const n = this.items.length - this.head;
+    const out = new Array<T>(n);
+    for (let i = 0; i < n; i++) out[i] = this.items[this.head + i].value;
+    return out;
   }
 
   /**
@@ -120,6 +140,7 @@ export class RollingTimeWindow<T> {
    */
   clear(): void {
     this.items = [];
+    this.head = 0;
   }
 
   /**
@@ -128,6 +149,13 @@ export class RollingTimeWindow<T> {
    */
   getWindowMs(): number {
     return this.windowMs;
+  }
+
+  /** Drops the evicted prefix from the backing store. */
+  protected _compact(): void {
+    if (this.head === 0) return;
+    this.items = this.items.slice(this.head);
+    this.head = 0;
   }
 }
 
@@ -174,12 +202,12 @@ export class RollingNumericWindow extends RollingTimeWindow<number> {
     const cutoff = nowTs - this.getWindowMs();
     // Count the expiring prefix and remove its contribution. Amortised O(1):
     // every item is visited here exactly once, on its way out.
-    let removed = 0;
-    while (removed < this.items.length && this.items[removed].ts < cutoff) {
-      const v = this.items[removed].value;
+    let i = this.head;
+    while (i < this.items.length && this.items[i].ts < cutoff) {
+      const v = this.items[i].value;
       this._sum -= v;
       this._sumSq -= v * v;
-      removed++;
+      i++;
     }
     super.evict(nowTs);
   }
@@ -193,7 +221,7 @@ export class RollingNumericWindow extends RollingTimeWindow<number> {
 
   /** Arithmetic mean of the window, or null when empty. */
   mean(): number | null {
-    const n = this.items.length;
+    const n = this.size();
     if (n === 0) return null;
     return this._sum / n;
   }
@@ -203,7 +231,7 @@ export class RollingNumericWindow extends RollingTimeWindow<number> {
    * Returns null when fewer than 2 observations are present.
    */
   stdDev(): number | null {
-    const n = this.items.length;
+    const n = this.size();
     if (n < 2) return null;
     const mean = this._sum / n;
     // Clamp: rounding can push a zero-variance window marginally negative.
@@ -215,9 +243,10 @@ export class RollingNumericWindow extends RollingTimeWindow<number> {
   private _rebuild(): void {
     let sum = 0;
     let sumSq = 0;
-    for (const item of this.items) {
-      sum += item.value;
-      sumSq += item.value * item.value;
+    for (let i = this.head; i < this.items.length; i++) {
+      const v = this.items[i].value;
+      sum += v;
+      sumSq += v * v;
     }
     this._sum = sum;
     this._sumSq = sumSq;
