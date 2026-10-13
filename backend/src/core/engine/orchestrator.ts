@@ -69,6 +69,12 @@ export class Orchestrator {
   private readonly _runKeys = new Set<string>();
   /** registry key → evaluate() errors in a row */
   private readonly _consecutiveErrors = new Map<string, number>();
+  /**
+   * Registry entries in evaluation order (priority, then registration),
+   * rebuilt only when the registry changes instead of on every market event.
+   * Never mutated in place: a pass iterates the array it started with.
+   */
+  private _evaluationOrder: Array<[string, IStrategy]> | null = null;
 
   constructor(
     public readonly eventBus: EventBus,
@@ -93,6 +99,7 @@ export class Orchestrator {
   registerStrategy(strategy: IStrategy, runId?: string): void {
     const key = runId ?? strategy.id;
     this.strategies.set(key, strategy);
+    this._evaluationOrder = null;
     if (runId) this._runKeys.add(runId);
 
     const cfg = strategy.config as BaseStrategyConfig;
@@ -133,6 +140,7 @@ export class Orchestrator {
     if (!strategy) return false;
     strategy.stop();
     this.strategies.delete(strategyId);
+    this._evaluationOrder = null;
     this._runKeys.delete(strategyId);
     this._consecutiveErrors.delete(strategyId);
     this.eventBus.publish({
@@ -312,9 +320,11 @@ export class Orchestrator {
   private _evaluateStrategies(symbol: string, trace?: EventTrace): void {
     if (this.riskEngine.isKillSwitchActive()) return;
     const probe = this.options.probe?.stageDetail ? this.options.probe : undefined;
-    const sorted = [...this.strategies.entries()]
-      .sort(([, a], [, b]) => getStrategyPriority(b.type) - getStrategyPriority(a.type));
-    for (const [key, strategy] of sorted) {
+    // Registration (or deregistration) during this pass rebuilds the order for
+    // the next event; this pass finishes over the order it started with.
+    const ordered = (this._evaluationOrder ??= [...this.strategies.entries()]
+      .sort(([, a], [, b]) => getStrategyPriority(b.type) - getStrategyPriority(a.type)));
+    for (const [key, strategy] of ordered) {
       if (!strategy.config.symbols.includes(symbol)) continue;
       // An earlier strategy's handler in this same pass may have deregistered it.
       if (!this.strategies.has(key)) continue;
