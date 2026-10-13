@@ -60,10 +60,11 @@ All are small and default-off:
 
 ## 4. Findings with evidence
 
-Ordered by the guide's §17 priority. None is fixed in this change: the guide asks
-for one material change at a time against a preserved baseline.
+Ordered by the guide's §17 priority. As found at `b96b53c`. Findings 1–5 were
+then fixed one commit at a time against a preserved baseline; see §7.
 
-1. **One-sided IEX quotes become prices (correctness, priority 1).** IEX sends
+1. **One-sided IEX quotes become prices (correctness, priority 1)** — *fixed in
+   `51003e0`*. IEX sends
    quotes with `bp` or `ap` = 0. They normalize to a mid of about half the
    price, which then marks positions (`portfolioState.updatePrice`) and can trip
    drawdown checks. The validator classifies them as `ONE_SIDED_QUOTE`.
@@ -71,24 +72,28 @@ for one material change at a time against a preserved baseline.
    runtime. Recommended next step: count them in a live capture
    (`issues.quote.ONE_SIDED_QUOTE`), then enable quarantine as its own versioned
    change.
-2. **Unparseable timestamps can wedge rolling windows (correctness).** A quote
+2. **Unparseable timestamps can wedge rolling windows (correctness)** — *fixed
+   in `c560cd7`*. A quote
    with a bad `t` gets `ts = NaN`. `RollingTimeWindow.evict` cannot order `NaN`,
    so the item is never evicted cleanly. Quarantine also prevents this.
-3. **A full portfolio snapshot on every market event (priority 3).**
+3. **A full portfolio snapshot on every market event (priority 3)** — *fixed in
+   `8f59a76`*.
    `_proactivePortfolioCheck` calls `portfolioState.getSnapshot()` per
    quote/trade/bar. That builds every position, an ISO timestamp and a UUID.
    CPU profile of the uninstrumented engine on synthetic quotes: `getSnapshot`
    is **18%** of busy CPU and UUID generation **12%**. Cheaper alternatives (a
    numeric equity check, or a snapshot without id/ISO fields) should be measured
    with `bench replay` before and after.
-4. **Strategies are re-sorted on every event (priority 3).**
+4. **Strategies are re-sorted on every event (priority 3)** — *fixed in
+   `4c0d455`*.
    `_evaluateStrategies` copies and sorts the registry each call (21% inclusive,
    including the evaluation itself). It scales with strategy count: 20
    `quote_imbalance` instances cut synthetic throughput from ~40k to ~15k
    frames/s.
-5. **Rolling-window eviction copies arrays (priority 3).** `evict()` uses
-   `slice`, an O(window) copy per evicting push. It is small at synthetic rates
-   (2%); re-measure with real symbol counts.
+5. **Rolling-window eviction copies arrays (priority 3)** — *fixed in
+   `283e1fc`*. `evict()` uses `slice`, an O(window) copy per evicting push. The
+   2% estimate here was wrong: it came from a short run whose 60 s windows were
+   never full. Once they are, this was the largest single cost (§7).
 6. **Not consumed downstream (information, not a bug):** trade corrections `c`,
    cancels/errors `x`, updated bars `u`, statuses `s` and LULD `l` arrive (the
    first two are subscribed automatically with trades) and are now counted as
@@ -114,13 +119,13 @@ Alpaca REST latency or live event age, which need the steps below.
 |---|---|
 | A audit | This document |
 | B trace context and metrics | Done (frame and stage detail levels; A/A tested) |
-| C normalization fidelity | Done (validation, venues, units documented, precise time); quarantine available but not enabled in the runtime |
+| C normalization fidelity | Done (validation, venues, units documented, precise time); runtimes quarantine unusable data by default since `51003e0` |
 | D bounded recorder | Done (rotation, hashes, gaps, disk caps, truncated-tail handling, redaction) |
 | E replay and load generator | Done (max/paced/burst, lateness, coordinated omission, null and sim sinks, determinism checksums) |
 | F delay simulator | Done (plan-gated, splits, ledger, empirical delays) |
 | G runtime health and AWS baseline | Code done (monitor, manifest incl. EC2/cgroup/clock); **AWS runs not yet done** |
 | H bounded paper probe | Code done and gated; **not run** (needs a dedicated paper account during market hours) |
-| I evidence-based optimization | **Not started by design.** Findings 1–5 are candidates once live/AWS baselines exist |
+| I evidence-based optimization | Findings 1–5 fixed against a synthetic baseline (§7). Still to confirm on a live capture and on AWS |
 
 ## 6. Outstanding external prerequisites
 
@@ -133,3 +138,50 @@ Alpaca REST latency or live event age, which need the steps below.
 4. Optionally `bench paper` on a dedicated paper account.
 5. `bench delay` with a predeclared plan on real captures (development split
    first; evaluation once).
+
+## 7. Follow-up: findings 1–5 fixed (same day)
+
+Each fix is its own commit, measured against a fixed recording (`bench fixture
+--duration-s 300 --symbols SPY,QQQ,IWM,AAPL,MSFT --write-recording`, seed 42:
+synthetic, 5 symbols, ~50 quotes and 10 trades per second each). Replays used
+`--invalid-data pass --sink sim --sample 0`, 5–7 repetitions per configuration,
+on the same Windows desktop. Medians in frames/s; run-to-run spread was 3–27%.
+
+| Configuration | `b96b53c` baseline | `8f59a76` risk view | `4c0d455` strategy order | `283e1fc` window eviction |
+|---|---|---|---|---|
+| `quote_imbalance` ×1 | 35,459 | 37,733 | 40,103 | 82,151 |
+| `quote_imbalance` ×20 | 4,825 | 5,000 | 5,146 | 5,634 |
+| `null` | 38,202 | 42,113 | 48,812 | 92,349 |
+| `pairs_trading` (SPY/QQQ) | 36,362 | 46,204 | 49,145 | 94,603 |
+| `minute_reversal` | 38,062 | 45,362 | 49,667 | 99,113 |
+
+- **Decision and fill checksums were identical in every column** for every
+  configuration. The three performance changes did not change a single
+  decision or fill.
+- Per-frame processing p99 (null strategy) went from 0.082 ms to 0.022 ms.
+- The 20-strategy configuration gains least: its cost is dominated by about 1M
+  signals per run, each building intents, risk checks and a full snapshot.
+- The quarantine change (`51003e0`) was measured separately. It made identical
+  decisions on this clean data, and validation cost 0–7% at maximum
+  throughput, within noise. It changes behaviour only for unusable messages,
+  by design. `MARKET_DATA_INVALID_POLICY=pass` restores the old behaviour.
+- Instrumentation overhead re-measured on the faster engine (A/A, 5
+  repetitions): counters-only 4.7% (0.7 µs/frame), sampled 9.0% (1.4 µs/frame),
+  stages 17.6%, full with recording 75.6%. "Sampled" is still above the
+  provisional 5% gate at maximum throughput on this host; judge it on Linux.
+
+### Next candidates (not done; same method applies)
+
+From a CPU profile of the engine after `283e1fc` (`quote_imbalance`, no probe,
+quarantine on):
+
+1. **A UUIDv4 for every published event:** about 7% of CPU (`newId`,
+   `serializeUUID`, `randomFillSync`). Market-data events could use a cheap
+   process-unique id; persisted events keep UUIDs.
+2. **`Date` parsing of every provider timestamp** (`isoToMs`, about 5%). The
+   telemetry fast parser gives the same millisecond and could replace it.
+   Prove equivalence on a capture first.
+3. **A full snapshot per order intent** (`_onOrderIntent` → `getSnapshot`).
+   This matters only for signal-heavy strategies (the ×20 configuration).
+
+None of this replaces the live-capture and AWS measurements in §6.

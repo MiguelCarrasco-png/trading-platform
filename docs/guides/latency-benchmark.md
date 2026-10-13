@@ -217,6 +217,15 @@ together: a dispatch span contains the state, evaluate and risk spans.
 | `order.submit_to_first_update_ns` | broker call → first order update on the bus |
 | `replay.*` (replay runs) | generator lateness, per-frame processing, scheduled → done (corrected for coordinated omission) |
 
+## Invalid market data
+
+Trading runtimes drop unusable messages (one-sided or crossed quotes,
+non-positive prices, unparseable timestamps) before they reach prices, marks
+or strategies. Drops are logged at the 1st, 10th, 100th, ... occurrence per
+kind and code. `MARKET_DATA_INVALID_POLICY=pass` restores the old behaviour.
+Benchmark commands follow the same setting unless you pass `--invalid-data`.
+To compare code changes like for like, pin it (e.g. `--invalid-data pass`).
+
 ## Known caveats
 
 - **Windows**: the OS timer tick (~15.6 ms) dominates event-loop delay and
