@@ -290,9 +290,9 @@ export class Orchestrator {
    * No-op when the kill switch is already active to prevent repeated firing.
    */
   private _proactivePortfolioCheck(mode: ExecutionMode): void {
-    if (this.riskEngine.getConfig().killSwitchActive) return;
-    const snapshot = this.portfolioState.getSnapshot();
-    const violation = this.riskEngine.checkPortfolio(snapshot);
+    if (this.riskEngine.isKillSwitchActive()) return;
+    // Equity and positions only: a full snapshot per quote costs a UUID and an ISO string.
+    const violation = this.riskEngine.checkPortfolio(this.portfolioState.getRiskView());
     if (violation) {
       if (violation.engageKillSwitch) {
         this.riskEngine.setKillSwitch(true);
@@ -310,7 +310,7 @@ export class Orchestrator {
   }
 
   private _evaluateStrategies(symbol: string, trace?: EventTrace): void {
-    if (this.riskEngine.getConfig().killSwitchActive) return;
+    if (this.riskEngine.isKillSwitchActive()) return;
     const probe = this.options.probe?.stageDetail ? this.options.probe : undefined;
     const sorted = [...this.strategies.entries()]
       .sort(([, a], [, b]) => getStrategyPriority(b.type) - getStrategyPriority(a.type));
@@ -739,7 +739,7 @@ export class Orchestrator {
       payload: snapshot,
     });
 
-    const wasKillSwitchActive = this.riskEngine.getConfig().killSwitchActive;
+    const wasKillSwitchActive = this.riskEngine.isKillSwitchActive();
     const violation = this.riskEngine.checkPortfolio(snapshot);
     if (violation) {
       if (violation.engageKillSwitch) {
@@ -777,7 +777,7 @@ export class Orchestrator {
       payload: snapshot,
     });
 
-    const wasKillSwitchActive = this.riskEngine.getConfig().killSwitchActive;
+    const wasKillSwitchActive = this.riskEngine.isKillSwitchActive();
     const violation = this.riskEngine.checkPortfolio(snapshot);
     if (violation) {
       if (violation.engageKillSwitch) {

@@ -55,6 +55,12 @@ export interface Position {
  * A point-in-time snapshot of the full portfolio state.
  * Stored periodically for charting the equity curve.
  */
+/**
+ * The part of a snapshot the portfolio risk check reads. Cheap enough to
+ * build on every market event (PortfolioStateManager.getRiskView).
+ */
+export type PortfolioRiskView = Pick<PortfolioSnapshot, "equity" | "positions">;
+
 export interface PortfolioSnapshot {
   /** Snapshot ID */
   id: UUID;

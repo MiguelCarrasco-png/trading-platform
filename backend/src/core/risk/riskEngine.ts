@@ -29,7 +29,7 @@ import { nowMs } from "../../utils/time";
 import { DEFAULT_RISK_CONFIG } from "../../config/defaults";
 import type { RiskConfig, RiskCheckResult, StrategyRiskBudget, PortfolioRiskViolation } from "../../types/risk";
 import type { OrderIntent } from "../../types/orders";
-import type { PortfolioSnapshot } from "../../types/portfolio";
+import type { PortfolioRiskView, PortfolioSnapshot } from "../../types/portfolio";
 import type { MarketHours } from "../market/marketHours";
 
 export class RiskEngine {
@@ -194,6 +194,11 @@ export class RiskEngine {
     return { ...this.config };
   }
 
+  /** Kill-switch state without copying the config (read on every market event). */
+  isKillSwitchActive(): boolean {
+    return this.config.killSwitchActive;
+  }
+
   /**
    * Updates risk config at runtime (e.g. from a frontend control).
    * @param updates - Partial RiskConfig fields to update
@@ -297,7 +302,7 @@ export class RiskEngine {
    * @param portfolio - Portfolio snapshot after the fill has been applied
    * @returns PortfolioRiskViolation or null if all checks pass
    */
-  checkPortfolio(portfolio: PortfolioSnapshot): PortfolioRiskViolation | null {
+  checkPortfolio(portfolio: PortfolioRiskView): PortfolioRiskViolation | null {
     if (this.sessionStartEquity === null && portfolio.equity > 0) {
       this.sessionStartEquity = portfolio.equity;
     }
