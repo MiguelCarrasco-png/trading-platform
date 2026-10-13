@@ -28,6 +28,12 @@ x-backend-environment: &backend-environment
   SANDBOX_MAX_CAPITAL_PCT: ${SANDBOX_MAX_CAPITAL_PCT:-0.05}
   SANDBOX_MAX_ACTIVE_RUNS_PER_MEMBER: ${SANDBOX_MAX_ACTIVE_RUNS_PER_MEMBER:-2}
   SANDBOX_RUN_TTL_HOURS: ${SANDBOX_RUN_TTL_HOURS:-24}
+  # Opt-in latency instrumentation of the runners (docs/guides/latency-benchmark.md).
+  # Off unless set in your shell; artifacts land in backend/artifacts/latency/.
+  LATENCY_PROBE: ${LATENCY_PROBE:-false}
+  LATENCY_PROBE_SAMPLE: ${LATENCY_PROBE_SAMPLE:-0.01}
+  LATENCY_PROBE_DETAIL: ${LATENCY_PROBE_DETAIL:-frame}
+  LATENCY_RECORD: ${LATENCY_RECORD:-false}
 
 x-backend-service: &backend-service
   build:

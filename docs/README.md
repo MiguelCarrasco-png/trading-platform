@@ -25,6 +25,9 @@ root (tsconfig, jest, eslint) stay there; everything else goes in a subfolder.
 ## Benchmarking
 
 [Latency benchmark agent guide](guides/LATENCY_BENCHMARK_AGENT_GUIDE.md) contains
-the implementation plan and runbook for measuring quote/trade processing, recording
+the implementation plan for measuring quote/trade processing, recording
 and replay, paper-order timing, and strategy delay sensitivity on the planned
-2-vCPU, 8-GB AWS host.
+2-vCPU, 8-GB AWS host. [Latency benchmark runbook](guides/latency-benchmark.md)
+is how to run what was built (`npm run bench:*` in `backend/`), and
+[the 2026-10-12 audit](history/latency-audit-2026-10-12.md) records the codebase
+findings and what is still to be measured.

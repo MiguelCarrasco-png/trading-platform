@@ -28,6 +28,7 @@ import { logger } from "../../utils/logger";
 import { nowMs } from "../../utils/time";
 import { newId } from "../../utils/ids";
 import type { IStrategy } from "../../strategies/base/strategy";
+import type { EngineProbe } from "../telemetry/latencyProbe";
 import type { ExecutionMode, UUID } from "../../types/common";
 import type { BaseStrategyConfig } from "../../types/strategy";
 import type {
@@ -40,6 +41,7 @@ import type {
   OrderRejectedEvent,
   OrderExpiredEvent,
   OrderIntentCreatedEvent,
+  EventTrace,
 } from "../../types/events";
 
 export interface OrchestratorOptions {
@@ -49,6 +51,12 @@ export interface OrchestratorOptions {
    * Unset = never (backtests keep their prior behavior).
    */
   maxConsecutiveErrors?: number;
+  /**
+   * Latency instrumentation (core/telemetry). Absent in ordinary runtimes; when
+   * set, state updates, each strategy evaluation and each intent's risk path
+   * are timed and correlated with the market event's trace.
+   */
+  probe?: EngineProbe;
 }
 
 export class Orchestrator {
@@ -243,28 +251,37 @@ export class Orchestrator {
   // ------------------------------------------------------------------
 
   private _onQuote(event: QuoteReceivedEvent): void {
+    const probe = this.options.probe?.stageDetail ? this.options.probe : undefined;
+    const start = probe ? probe.now() : 0n;
     this.symbolState.onQuote(event.payload);
     // Mark-to-market: refresh unrealized PnL on every quote so equity tracks
     // price moves even when no new fills occur.
     this.portfolioState.updatePrice(event.payload.symbol, event.payload.midPrice);
     this._proactivePortfolioCheck(event.mode);
-    this._evaluateStrategies(event.payload.symbol);
+    if (probe) probe.span(event.trace, "state", start, probe.now());
+    this._evaluateStrategies(event.payload.symbol, event.trace);
   }
 
   private _onTrade(event: TradeReceivedEvent): void {
+    const probe = this.options.probe?.stageDetail ? this.options.probe : undefined;
+    const start = probe ? probe.now() : 0n;
     this.symbolState.onTrade(event.payload);
     this.portfolioState.updatePrice(event.payload.symbol, event.payload.price);
     this._proactivePortfolioCheck(event.mode);
-    this._evaluateStrategies(event.payload.symbol);
+    if (probe) probe.span(event.trace, "state", start, probe.now());
+    this._evaluateStrategies(event.payload.symbol, event.trace);
   }
 
   private _onBar(event: BarReceivedEvent): void {
+    const probe = this.options.probe?.stageDetail ? this.options.probe : undefined;
+    const start = probe ? probe.now() : 0n;
     this.symbolState.onBar(event.payload);
     // Mark-to-market against the bar close so the equity snapshot taken right
     // after this handler returns reflects the current price.
     this.portfolioState.updatePrice(event.payload.symbol, event.payload.close);
     this._proactivePortfolioCheck(event.mode);
-    this._evaluateStrategies(event.payload.symbol);
+    if (probe) probe.span(event.trace, "state", start, probe.now());
+    this._evaluateStrategies(event.payload.symbol, event.trace);
   }
 
   /**
@@ -292,8 +309,9 @@ export class Orchestrator {
     }
   }
 
-  private _evaluateStrategies(symbol: string): void {
+  private _evaluateStrategies(symbol: string, trace?: EventTrace): void {
     if (this.riskEngine.getConfig().killSwitchActive) return;
+    const probe = this.options.probe?.stageDetail ? this.options.probe : undefined;
     const sorted = [...this.strategies.entries()]
       .sort(([, a], [, b]) => getStrategyPriority(b.type) - getStrategyPriority(a.type));
     for (const [key, strategy] of sorted) {
@@ -301,6 +319,7 @@ export class Orchestrator {
       // An earlier strategy's handler in this same pass may have deregistered it.
       if (!this.strategies.has(key)) continue;
       let signal: ReturnType<IStrategy["evaluate"]>;
+      const evalStart = probe ? probe.now() : 0n;
       try {
         signal = strategy.evaluate({
           symbolState: this.symbolState,
@@ -309,9 +328,11 @@ export class Orchestrator {
           symbol,
         });
       } catch (err) {
+        if (probe) probe.span(trace, "evaluate", evalStart, probe.now(), "error");
         this._onEvaluateError(key, strategy, String(err));
         continue;
       }
+      if (probe) probe.span(trace, "evaluate", evalStart, probe.now(), signal ? "signal" : "no_signal");
       this._onEvaluateSuccess(key, strategy);
       if (signal) {
         this.eventBus.publish({
@@ -323,6 +344,7 @@ export class Orchestrator {
           payload: signal,
           runKey: key,
           signalId: newId(),
+          ...(trace ? { trace } : {}),
         });
       }
     }
@@ -377,8 +399,9 @@ export class Orchestrator {
       ...(event.signalId ? { signalId: event.signalId as UUID } : {}),
     };
 
+    const trace: EventTrace | undefined = event.trace;
     if (signal.meta?.kind === "maker_quotes") {
-      this._onMakerQuoteSignal(signal, event.mode, origin);
+      this._onMakerQuoteSignal(signal, event.mode, origin, trace);
       return;
     }
 
@@ -431,6 +454,7 @@ export class Orchestrator {
       this.eventBus.publish({
         id: newId(), type: "ORDER_INTENT_CREATED", ts: nowMs(), mode: event.mode,
         strategyId: signal.strategyId, payload: leg,
+        ...(trace ? { trace } : {}),
       });
     }
   }
@@ -521,7 +545,12 @@ export class Orchestrator {
    *
    * No-op when makerQuotes is empty (e.g. kill-switch state).
    */
-  private _onMakerQuoteSignal(signal: any, mode: ExecutionMode, origin: { runId?: UUID; signalId?: UUID } = {}): void {
+  private _onMakerQuoteSignal(
+    signal: any,
+    mode: ExecutionMode,
+    origin: { runId?: UUID; signalId?: UUID } = {},
+    trace?: EventTrace,
+  ): void {
     const meta = signal.meta as {
       kind: "maker_quotes";
       makerQuotes?: Array<{ side: "buy" | "sell"; price: number; qty: number }>;
@@ -553,6 +582,7 @@ export class Orchestrator {
         mode,
         strategyId: signal.strategyId,
         payload: intent,
+        ...(trace ? { trace } : {}),
       });
     }
   }
@@ -563,6 +593,15 @@ export class Orchestrator {
    * → capital reservation → execution submission.
    */
   private _onOrderIntent(event: OrderIntentCreatedEvent): void {
+    // The risk span runs from intent receipt to the hand-off to execution (or
+    // the rejection). It never includes the asynchronous journal/broker work.
+    const probe = this.options.probe;
+    const riskStart = probe ? probe.now() : 0n;
+    if (probe) probe.intentReady(event.payload.id, event.trace, riskStart);
+    const riskDone = (outcome: string): void => {
+      if (probe) probe.span(event.trace, "risk", riskStart, probe.now(), outcome, event.payload.id);
+    };
+
     const symState = this.symbolState.get(event.payload.symbol);
     const mid = symState?.latestMid ?? symState?.latestBar?.close ?? null;
     // The price the strategy acted on: the baseline that fills are measured against.
@@ -582,6 +621,7 @@ export class Orchestrator {
         failedCheck: riskResult.failedCheck ?? "UNKNOWN",
         rejectedIntent: intent,
       });
+      riskDone(`rejected_${riskResult.failedCheck ?? "UNKNOWN"}`);
       return;
     }
 
@@ -595,6 +635,7 @@ export class Orchestrator {
         failedCheck: "NO_REFERENCE_PRICE",
         rejectedIntent: intent,
       });
+      riskDone("rejected_NO_REFERENCE_PRICE");
       return;
     }
     const worstCaseNotional = intent.qty * worstCasePrice;
@@ -611,6 +652,7 @@ export class Orchestrator {
         failedCheck: budgetFail.failedCheck,
         rejectedIntent: intent,
       });
+      riskDone(`rejected_${budgetFail.failedCheck}`);
       return;
     }
 
@@ -626,6 +668,7 @@ export class Orchestrator {
         required: worstCaseNotional,
         available: this.capitalReservation.getAvailableCash(portfolio.cash),
       });
+      riskDone("capital_unavailable");
       return;
     }
 
@@ -638,6 +681,7 @@ export class Orchestrator {
       strategyId: intent.strategyId,
     });
 
+    riskDone("passed");
     this.executionEngine.submit(intent).catch((err) => {
       logger.error("Orchestrator: execution submission failed", {
         intentId: intent.id,

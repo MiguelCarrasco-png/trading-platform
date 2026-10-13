@@ -124,6 +124,18 @@ export const env = {
   replayTo: optional("REPLAY_TO", ""),
   replaySpeed: optionalNumber("REPLAY_SPEED", 1),
 
+  // Latency instrumentation of a trading runtime (docs/guides/latency-benchmark.md).
+  // Off by default; when on it only observes — no trading decision changes.
+  latencyProbe: optionalBool("LATENCY_PROBE", false),
+  /** Output directory; default artifacts/latency/runtime-<mode>-<run id> under the working directory. */
+  latencyProbeDir: optional("LATENCY_PROBE_DIR", ""),
+  latencyProbeSample: optionalNumber("LATENCY_PROBE_SAMPLE", 0.01),
+  latencyProbeDetail: optional("LATENCY_PROBE_DETAIL", "frame") as "frame" | "stage",
+  latencyProbeExportSeconds: optionalNumber("LATENCY_PROBE_EXPORT_SECONDS", 60),
+  /** Also record raw inbound market-data frames from this runtime's own stream. */
+  latencyRecord: optionalBool("LATENCY_RECORD", false),
+  latencyRecordMaxMb: optionalNumber("LATENCY_RECORD_MAX_MB", 2048),
+
   // Feature flags
   enableLiveTrading: optionalBool("ENABLE_LIVE_TRADING", false),
   enableWebSocketPush: optionalBool("ENABLE_WEBSOCKET_PUSH", true),
