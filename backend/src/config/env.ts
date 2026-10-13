@@ -44,6 +44,17 @@ function optionalBool(key: string, defaultValue: boolean): boolean {
  */
 export type ExecutionTarget = "sim" | "alpaca-paper" | "alpaca-live";
 
+/**
+ * What a trading runtime does with market data that fails validation (see
+ * adapters/alpaca/normalizer.ts). "quarantine" drops it before it reaches
+ * prices, marks and strategies; "pass" restores the old behaviour.
+ */
+function marketDataInvalidPolicy(): "pass" | "quarantine" {
+  const raw = optional("MARKET_DATA_INVALID_POLICY", "quarantine");
+  if (raw === "pass" || raw === "quarantine") return raw;
+  throw new Error(`MARKET_DATA_INVALID_POLICY must be pass or quarantine, got: "${raw}"`);
+}
+
 function executionTarget(): ExecutionTarget {
   const raw = optional("EXECUTION_TARGET", "sim");
   if (raw === "sim" || raw === "alpaca-paper" || raw === "alpaca-live") return raw;
@@ -81,6 +92,7 @@ export const env = {
   alpacaPaperBaseUrl: optional("ALPACA_PAPER_BASE_URL", "https://paper-api.alpaca.markets"),
   alpacaLiveBaseUrl: optional("ALPACA_LIVE_BASE_URL", "https://api.alpaca.markets"),
   alpacaDataStreamUrl: optional("ALPACA_DATA_STREAM_URL", "wss://stream.data.alpaca.markets/v2/iex"),
+  marketDataInvalidPolicy: marketDataInvalidPolicy(),
   alpacaPaperStreamUrl: optional("ALPACA_PAPER_STREAM_URL", "wss://paper-api.alpaca.markets/stream"),
   alpacaLiveStreamUrl: optional("ALPACA_LIVE_STREAM_URL", "wss://api.alpaca.markets/stream"),
 
@@ -123,6 +135,18 @@ export const env = {
   replayFrom: optional("REPLAY_FROM", ""),
   replayTo: optional("REPLAY_TO", ""),
   replaySpeed: optionalNumber("REPLAY_SPEED", 1),
+
+  // Latency instrumentation of a trading runtime (docs/guides/latency-benchmark.md).
+  // Off by default; when on it only observes — no trading decision changes.
+  latencyProbe: optionalBool("LATENCY_PROBE", false),
+  /** Output directory; default artifacts/latency/runtime-<mode>-<run id> under the working directory. */
+  latencyProbeDir: optional("LATENCY_PROBE_DIR", ""),
+  latencyProbeSample: optionalNumber("LATENCY_PROBE_SAMPLE", 0.01),
+  latencyProbeDetail: optional("LATENCY_PROBE_DETAIL", "frame") as "frame" | "stage",
+  latencyProbeExportSeconds: optionalNumber("LATENCY_PROBE_EXPORT_SECONDS", 60),
+  /** Also record raw inbound market-data frames from this runtime's own stream. */
+  latencyRecord: optionalBool("LATENCY_RECORD", false),
+  latencyRecordMaxMb: optionalNumber("LATENCY_RECORD_MAX_MB", 2048),
 
   // Feature flags
   enableLiveTrading: optionalBool("ENABLE_LIVE_TRADING", false),

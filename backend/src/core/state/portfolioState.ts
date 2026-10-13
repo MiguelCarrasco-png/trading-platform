@@ -11,7 +11,7 @@
 
 import { nowMs, msToIso } from "../../utils/time";
 import { newId } from "../../utils/ids";
-import type { Position, PortfolioSnapshot } from "../../types/portfolio";
+import type { Position, PortfolioRiskView, PortfolioSnapshot } from "../../types/portfolio";
 import type { Fill } from "../../types/orders";
 import type { Symbol, UUID } from "../../types/common";
 
@@ -100,6 +100,18 @@ export class PortfolioStateManager {
    */
   getCash(): number {
     return this.cash;
+  }
+
+  /**
+   * Equity and open positions for the per-event portfolio risk check — without
+   * the snapshot's id, timestamp and P&L totals, which cost a UUID and an ISO
+   * string on every quote. Equity is summed exactly as getSnapshot() sums it,
+   * so the two agree to the last bit.
+   */
+  getRiskView(): PortfolioRiskView {
+    const positions = this.getAllPositions();
+    const positionsValue = positions.reduce((s, p) => s + p.marketValue, 0);
+    return { equity: this.cash + positionsValue, positions };
   }
 
   /**

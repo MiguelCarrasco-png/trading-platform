@@ -25,7 +25,7 @@
     "lint:strict": "eslint src --max-warnings 0",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:unit": "jest src/tests/core src/tests/repositories src/tests/utils src/tests/adapters src/tests/strategy src/tests/services src/tests/controllers",
+    "test:unit": "jest src/tests/core src/tests/repositories src/tests/utils src/tests/adapters src/tests/strategy src/tests/services src/tests/controllers src/tests/bench",
     "test:int": "jest src/tests/int",
     "test:http": "jest src/tests/http",
     "test:ci": "jest --coverage --ci",
@@ -35,7 +35,14 @@
     "db:baseline": "ts-node src/runtime/migrate.ts baseline",
     "db:verify": "ts-node src/runtime/verify/dbVerify.ts",
     "verify:http": "ts-node src/runtime/verify/httpSmoke.ts",
-    "verify:backtest": "ts-node src/runtime/verify/backtestVerify.ts"
+    "verify:backtest": "ts-node src/runtime/verify/backtestVerify.ts",
+    "bench": "tsc && node dist/runtime/bench.js",
+    "bench:fixture": "tsc && node dist/runtime/bench.js fixture",
+    "bench:capture": "tsc && node dist/runtime/bench.js capture",
+    "bench:replay": "tsc && node dist/runtime/bench.js replay",
+    "bench:delay": "tsc && node dist/runtime/bench.js delay",
+    "bench:paper": "tsc && node dist/runtime/bench.js paper",
+    "bench:report": "tsc && node dist/runtime/bench.js report"
   },
   "keywords": [
     "trading",

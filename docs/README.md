@@ -21,3 +21,13 @@ scripts/    local-stack.mjs (npm run dev:stack), check-strategy-versions.mjs
 Rules of thumb: a Dockerfile lives next to the app it builds; Compose files live in
 `docker/` (local) or `deploy/` (production); tool configs that must sit at a package
 root (tsconfig, jest, eslint) stay there; everything else goes in a subfolder.
+
+## Benchmarking
+
+[Latency benchmark agent guide](guides/LATENCY_BENCHMARK_AGENT_GUIDE.md) contains
+the implementation plan for measuring quote/trade processing, recording
+and replay, paper-order timing, and strategy delay sensitivity on the planned
+2-vCPU, 8-GB AWS host. [Latency benchmark runbook](guides/latency-benchmark.md)
+is how to run what was built (`npm run bench:*` in `backend/`), and
+[the 2026-10-12 audit](history/latency-audit-2026-10-12.md) records the codebase
+findings and what is still to be measured.

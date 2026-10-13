@@ -32,6 +32,23 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
 /** Orders whose stream-reported fills are remembered for reconciliation. */
 const STREAM_FILLS_CAPACITY = 10_000;
 
+/** A trade_updates message, stamped at the first line of the socket callback. */
+export interface TradeUpdateReceipt {
+  /** Alpaca event name: new, accepted, fill, partial_fill, canceled, rejected, ... */
+  event: string;
+  clientOrderId?: string;
+  rxWallMs: number;
+  rxMonoNs: bigint;
+}
+
+export interface OrderExecutionAdapterOptions {
+  /**
+   * Latency instrumentation: told about every trade update, including the
+   * acknowledgements (new/accepted) that are not published on the bus.
+   */
+  onTradeUpdate?: (update: TradeUpdateReceipt) => void;
+}
+
 export class AlpacaOrderExecutionAdapter {
   private tradeStreamWs: WebSocket | null = null;
   private isConnected = false;
@@ -55,6 +72,7 @@ export class AlpacaOrderExecutionAdapter {
   constructor(
     private readonly eventBus: EventBus,
     private readonly mode: ExecutionMode = "paper",
+    private readonly options: OrderExecutionAdapterOptions = {},
   ) {}
 
   /**
@@ -262,6 +280,9 @@ export class AlpacaOrderExecutionAdapter {
     authResolve?: (v: void) => void,
     authReject?: (err: Error) => void,
   ): void {
+    const onTradeUpdate = this.options.onTradeUpdate;
+    const rxMonoNs = onTradeUpdate ? process.hrtime.bigint() : 0n;
+    const rxWallMs = onTradeUpdate ? Date.now() : 0;
     let msg: Record<string, unknown>;
     try {
       msg = JSON.parse(data.toString());
@@ -292,7 +313,17 @@ export class AlpacaOrderExecutionAdapter {
     }
 
     if (stream === "trade_updates") {
-      this._handleTradeUpdate((msg["data"] as Record<string, unknown>) ?? {});
+      const update = (msg["data"] as Record<string, unknown>) ?? {};
+      if (onTradeUpdate) {
+        const order = update["order"] as Record<string, unknown> | undefined;
+        onTradeUpdate({
+          event: String(update["event"] ?? ""),
+          clientOrderId: order?.["client_order_id"] as string | undefined,
+          rxWallMs,
+          rxMonoNs,
+        });
+      }
+      this._handleTradeUpdate(update);
     }
   }
 
