@@ -36,9 +36,13 @@ export class RollingTimeWindow<T> {
 
   /**
    * Appends a new timestamped value to the window and evicts stale entries.
+   * An item whose timestamp is not a finite number is ignored: it cannot be
+   * placed in time, and once stored it would stop eviction from ordering the
+   * window (NaN compares false both ways), leaving stale items in place.
    * @param item - A TimedValue containing the timestamp and value
    */
   push(item: TimedValue<T>): void {
+    if (!Number.isFinite(item.ts)) return;
     this.items.push(item);
     this.evict(item.ts);
   }
@@ -155,6 +159,7 @@ export class RollingNumericWindow extends RollingTimeWindow<number> {
   private static readonly REBUILD_INTERVAL = 4096;
 
   override push(item: TimedValue<number>): void {
+    if (!Number.isFinite(item.ts)) return; // ignored by the base class too; keep the sums consistent
     this._sum += item.value;
     this._sumSq += item.value * item.value;
     // super.push appends then calls this.evict, which subtracts anything aged out.
