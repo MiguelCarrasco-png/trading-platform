@@ -37,6 +37,7 @@ import {
 } from "../../adapters/supabase/backtestJobRepository";
 import { BacktestStreamManager } from "../../core/backtest/backtestStreamManager";
 import { BACKTEST_ENGINE_VERSION } from "../../core/backtest/backtestEngine";
+import { executionForConfig } from "../../core/execution/quoteFillModel";
 import { getStrategyVersionById } from "../../adapters/supabase/reviewRepositories";
 import { PairsStrategy } from "../../strategies/pairs/pairsStrategy";
 import { logger } from "../../utils/logger";
@@ -239,6 +240,14 @@ export async function runBacktest(req: Request, res: Response): Promise<void> {
     }
   }
 
+  let execution: BacktestConfig["execution"];
+  try {
+    execution = executionForConfig(body.execution);
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+    return;
+  }
+
   // Resolve the algorithm version from the strategy class so the config key is
   // stable across requests regardless of what the frontend sends.
   const resolvedStrategyVersion: number | undefined =
@@ -254,6 +263,7 @@ export async function runBacktest(req: Request, res: Response): Promise<void> {
     strategyVersion: resolvedStrategyVersion,
     // Always this build's semantics, never the client's: it is part of the dedup key.
     engineVersion: BACKTEST_ENGINE_VERSION,
+    execution,
   };
   const configKey = backtestConfigKey(config);
 

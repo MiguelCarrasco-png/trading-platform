@@ -31,6 +31,8 @@ import { RiskEngine } from "../risk/riskEngine";
 import { ExecutionEngine } from "../execution/executionEngine";
 import { SimulatedExecutionSink } from "../execution/simulatedExecution";
 import { DEFAULT_FILL_MODEL, type FillModelConfig } from "../execution/fillModel";
+import { resolveExecution, validateExecution } from "../execution/quoteFillModel";
+import type { HistoricalTickSource } from "./tickSource";
 import { validateBars, type ValidationIssue } from "./dataValidation";
 import { computeAnalytics } from "./performanceAnalytics";
 import { buildTradeLedger, tradeStats } from "../analytics/tradeLedger";
@@ -44,7 +46,7 @@ import type { PortfolioSnapshot } from "../../types/portfolio";
 import type { IStrategy } from "../../strategies/base/strategy";
 import type { BaseStrategyConfig } from "../../types/strategy";
 import type { Fill } from "../../types/orders";
-import type { Bar } from "../../types/market";
+import type { Bar, HistoricalFeed } from "../../types/market";
 import type { BacktestProgressPoint } from "./backtestStreamManager";
 
 /**
@@ -61,7 +63,10 @@ const YIELD_EVERY_MS = 200;
  * semantics is never reused. A config without one predates versioning (v1).
  *   v1: bars processed at their start time.
  *   v2: bars processed when they complete (start + timeframe), the moment
- *       their close is known; strategies, risk and orders see that time.
+ *       their close is known; strategies, risk and orders see that time. An
+ *       order never fills against a bar that completed before it was placed
+ *       (v1 filled an order for a symbol published later in the same batch at
+ *       that symbol's same-minute open — before the decision).
  */
 export const BACKTEST_ENGINE_VERSION = 2;
 
@@ -70,8 +75,22 @@ export interface BacktestRunOptions {
   signal?: AbortSignal;
 }
 
+export interface BacktestEngineOptions {
+  /**
+   * Historical quotes and trades for the quote execution model, per feed.
+   * Without it, a config asking for quote fills is refused.
+   */
+  tickSource?: (feed: HistoricalFeed) => HistoricalTickSource;
+}
+
+/** Bound on arrival rounds per batch: fills can trigger orders (a kill switch) that also need pricing. */
+const MAX_ARRIVAL_ROUNDS = 8;
+
 export class BacktestEngine {
-  constructor(private readonly loader: BacktestLoader = new BacktestLoader()) {}
+  constructor(
+    private readonly loader: BacktestLoader = new BacktestLoader(),
+    private readonly options: BacktestEngineOptions = {},
+  ) {}
 
   /**
    * Runs a full backtest with the given config and strategy factory.
@@ -112,6 +131,18 @@ export class BacktestEngine {
       ...(config.fillModel ?? {}),
     };
 
+    // How orders are priced: the bar model above, or real quotes around each order.
+    const execution = resolveExecution(config.execution);
+    const executionError = validateExecution(execution);
+    if (executionError) throw new Error(`Invalid execution config: ${executionError}`);
+    let tickSource: HistoricalTickSource | null = null;
+    if (execution.model === "quote") {
+      if (!this.options.tickSource) {
+        throw new Error("Quote fills need historical quotes, but this engine has no tick source configured");
+      }
+      tickSource = this.options.tickSource(execution.feed);
+    }
+
     // Set up isolated engine instances for this run
     const eventBus = new EventBus();
     const symbolState = new SymbolStateManager();
@@ -125,6 +156,7 @@ export class BacktestEngine {
       fillModel.slippageBps,
       fillModel.commissionPerShare,
       fillModel,
+      execution,
     );
     const executionEngine = new ExecutionEngine(simulatedSink);
 
@@ -273,6 +305,15 @@ export class BacktestEngine {
         if (currentBatch.length > 0) batches.push(currentBatch);
 
         for (const batch of batches) {
+          // Quote model: limits resting through the minute these bars cover
+          // fill on the trades printed during it, before its end is processed.
+          if (tickSource && simulatedSink.hasResting()) {
+            for (const plan of await simulatedSink.planResting(batch, tickSource)) {
+              simulatedNow = Math.max(simulatedNow, plan.ts);
+              simulatedSink.applyResting(plan);
+            }
+          }
+
           // A batch becomes known when its bars complete — the 10:00 bar at
           // 10:01 — so strategies, risk checks and new orders see that time.
           simulatedNow = barEndMs(batch[0]);
@@ -319,6 +360,10 @@ export class BacktestEngine {
           processedBars += batch.length;
           batchIndex++;
 
+          // Quote model: price the orders just placed when each reaches the
+          // market, latencyMs after this batch's decisions.
+          if (tickSource) await this._resolveArrivals(simulatedSink, tickSource, (ts) => { simulatedNow = Math.max(simulatedNow, ts); });
+
           if (performance.now() - lastYieldAt >= YIELD_EVERY_MS) {
             await new Promise<void>((resolve) => setImmediate(resolve));
             lastYieldAt = performance.now();
@@ -326,6 +371,8 @@ export class BacktestEngine {
           }
         }
       }
+      // Orders placed on the final bar can still reach the market under the quote model.
+      if (tickSource) await this._resolveArrivals(simulatedSink, tickSource, (ts) => { simulatedNow = Math.max(simulatedNow, ts); });
     } finally {
       // Always clear the clock override — even if the run threw partway through.
       setClockOverride(null);
@@ -411,6 +458,8 @@ export class BacktestEngine {
         riskFreeRateAnnual: analytics.riskFreeRateAnnual,
         benchmarkReturn: analytics.benchmarkReturn,
         returnPeriods: analytics.periodCount,
+        // How quote fills priced the run's orders; kept in metrics so it survives saving.
+        ...(execution.model === "quote" ? { execution: simulatedSink.executionReport() } : {}),
       },
     };
 
@@ -456,6 +505,24 @@ export class BacktestEngine {
   // ------------------------------------------------------------------
   // Private
   // ------------------------------------------------------------------
+
+  /**
+   * Prices every quote-model order waiting to reach the market, publishing
+   * each decision at its own time. A fill can place new orders (an emergency
+   * close), which arrive in turn; the rounds are bounded.
+   */
+  private async _resolveArrivals(
+    sink: SimulatedExecutionSink,
+    source: HistoricalTickSource,
+    setClock: (ts: number) => void,
+  ): Promise<void> {
+    for (let round = 0; round < MAX_ARRIVAL_ROUNDS && sink.hasArrivals(); round++) {
+      for (const plan of await sink.planArrivals(source)) {
+        setClock(plan.ts);
+        sink.applyArrival(plan);
+      }
+    }
+  }
 
   private _computeMetrics(
     equityCurve: PortfolioSnapshot[],

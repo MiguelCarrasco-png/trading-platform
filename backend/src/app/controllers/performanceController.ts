@@ -21,6 +21,7 @@ import { SupabaseBarCache } from "../../adapters/supabase/barCacheRepository";
 import { BacktestLoader } from "../../core/backtest/backtestLoader";
 import { BACKTESTABLE_TYPES } from "../../core/backtest/strategyFactory";
 import { BACKTEST_ENGINE_VERSION } from "../../core/backtest/backtestEngine";
+import { executionForConfig } from "../../core/execution/quoteFillModel";
 import { benchmarkPnl, loadBenchmarkCurve } from "../../core/analytics/benchmark";
 import { env } from "../../config/env";
 import { newId } from "../../utils/ids";
@@ -189,7 +190,18 @@ export async function getRunSignals(req: Request, res: Response): Promise<void> 
  */
 export async function compareRunWithBacktest(req: Request, res: Response): Promise<void> {
   const runId = String(req.params.runId);
-  const force = !!(req.body as { force?: boolean } | undefined)?.force;
+  const body = req.body as { force?: boolean; execution?: unknown } | undefined;
+  const force = !!body?.force;
+  let execution: BacktestConfig["execution"];
+  try {
+    execution = executionForConfig(body?.execution);
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+    return;
+  }
+  // One comparison per execution model, so quote fills can be checked
+  // against the run's real fills without replacing the bar-model comparison.
+  const metaKey = execution ? "compareQuoteBacktestId" : "compareBacktestId";
   try {
     const run = await getStrategyRunById(runId);
     if (!run) {
@@ -205,8 +217,8 @@ export async function compareRunWithBacktest(req: Request, res: Response): Promi
       return;
     }
     const meta = (run.meta ?? {}) as Record<string, unknown>;
-    if (meta.compareBacktestId && !force) {
-      res.json({ backtestId: meta.compareBacktestId, reused: true });
+    if (meta[metaKey] && !force) {
+      res.json({ backtestId: meta[metaKey], reused: true });
       return;
     }
     const config: BacktestConfig = {
@@ -220,6 +232,7 @@ export async function compareRunWithBacktest(req: Request, res: Response): Promi
       commissionPerShare: 0.005,
       dataGranularity: "bar",
       engineVersion: BACKTEST_ENGINE_VERSION,
+      execution,
       strategyId: run.strategyId,
       strategyVersionId: run.versionId,
       strategyVersion: run.strategyVersion,
@@ -229,7 +242,7 @@ export async function compareRunWithBacktest(req: Request, res: Response): Promi
     const queued = await enqueueBacktestJob({
       id: config.id, configKey: backtestConfigKey(config), config, requestedBy: req.user?.id ?? null,
     });
-    await updateStrategyRun(run.id, { meta: { ...meta, compareBacktestId: queued.jobId } });
+    await updateStrategyRun(run.id, { meta: { ...meta, [metaKey]: queued.jobId } });
     res.status(202).json({ backtestId: queued.jobId, deduped: queued.deduped });
   } catch (err) {
     logger.error("compareRunWithBacktest failed", { runId, err: String(err) });

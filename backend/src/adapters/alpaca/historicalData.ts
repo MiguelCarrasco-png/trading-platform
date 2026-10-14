@@ -20,6 +20,8 @@
 import { env } from "../../config/env";
 import { alpacaGet, type AlpacaCredentials } from "./rest";
 import { RateLimiter } from "../../utils/rateLimiter";
+import { FileTickCache } from "../localfs/fileTickCache";
+import { CachedTickSource, type HistoricalTickSource } from "../../core/backtest/tickSource";
 import type { HistoricalFeed, RawTick, TickKind } from "../../types/market";
 
 export const ALPACA_DATA_URL = "https://data.alpaca.markets/v2";
@@ -72,4 +74,9 @@ export class AlpacaHistoricalClient {
     } while (pageToken);
     return records;
   }
+}
+
+/** The tick source backtests use: the local file cache in front of Alpaca, on one feed. */
+export function createTickSource(feed: HistoricalFeed): HistoricalTickSource {
+  return new CachedTickSource(new FileTickCache(env.marketDataDir), new AlpacaHistoricalClient(), feed);
 }

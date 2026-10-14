@@ -3,7 +3,7 @@
 | Folder | What's in it |
 |---|---|
 | [guides/](guides/) | How to do things: [local development](guides/local-development.md), [deployment](guides/deployment.md), [backtesting](guides/backtesting.md), [replay](guides/replay.md), [live paper trading](guides/live-paper-trading.md), [testing](guides/testing.md), [member instructions](guides/member-instructions.md) |
-| [architecture/](architecture/) | How it is built: [system design](architecture/design.md) and the risk, OMS, sizing, execution and broker-ledger layers |
+| [architecture/](architecture/) | How it is built: [system design](architecture/design.md), [backtest decisions and fills](architecture/backtest-execution.md), and the risk, OMS, sizing, execution and broker-ledger layers |
 | [strategies/](strategies/) | [Strategy overview](strategies/overview.md) and per-strategy write-ups |
 | [history/](history/) | Point-in-time handoffs and PR summaries. Accurate when written, not kept current |
 

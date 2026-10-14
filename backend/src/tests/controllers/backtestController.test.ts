@@ -265,6 +265,20 @@ describe('runBacktest', () => {
     expect(mockEnqueue).not.toHaveBeenCalled();
   });
 
+  it('stores a quote execution model fully resolved, and nothing for the bar model', async () => {
+    await runBacktest(mockReq({ body: { ...validBody, execution: { model: 'quote' } } }), mockRes());
+    expect(mockEnqueue.mock.calls[0][0].config.execution).toMatchObject({ model: 'quote', latencyMs: 250, feed: 'sip' });
+    await runBacktest(mockReq({ body: { ...validBody, execution: { model: 'bar' } } }), mockRes());
+    expect(mockEnqueue.mock.calls[1][0].config.execution).toBeUndefined();
+  });
+
+  it('rejects an invalid execution setting with 400', async () => {
+    const res = mockRes();
+    await runBacktest(mockReq({ body: { ...validBody, execution: { model: 'quote', maxQuoteWaitMs: 60_000 } } }), res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mockEnqueue).not.toHaveBeenCalled();
+  });
+
   it("stamps this build's engine version, not one sent by the client", async () => {
     await runBacktest(mockReq({ body: { ...validBody, engineVersion: 1 } }), mockRes());
     expect(mockEnqueue.mock.calls[0][0].config.engineVersion).toBe(BACKTEST_ENGINE_VERSION);

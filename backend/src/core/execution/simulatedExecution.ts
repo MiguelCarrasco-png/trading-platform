@@ -17,6 +17,19 @@
  *   - If no usable reference price is available, the order is rejected via
  *     ORDER_REJECTED rather than filled at $0.
  *
+ * Quote model (ExecutionConfig.model = "quote", see quoteFillModel.ts):
+ *   - Orders are priced against real quotes when they reach the market,
+ *     latencyMs after the decision. The quotes come from a HistoricalTickSource,
+ *     which is asynchronous while the event bus is not, so the engine calls
+ *     planArrivals() / planResting() between timestamp batches and then
+ *     applies each plan in time order, setting the simulated clock to it.
+ *   - Resting limits fill on regular-session trades printing through their
+ *     price, checked minute by minute and fetched only for minutes whose bar
+ *     reached the limit. Like bar-model orders, DAY limits are not expired at
+ *     the close; they rest until filled, canceled, or the run ends.
+ *   - An order the quote model cannot price falls back to the bar model; its
+ *     fill records why. Every fill records what priced it (Fill.source).
+ *
  * Inputs:  OrderIntent from the ExecutionEngine; current symbol state for prices.
  * Outputs: Submitted Order; publishes ORDER_SUBMITTED + ORDER_FILLED/ORDER_REJECTED.
  */
@@ -24,27 +37,97 @@
 import { EventBus } from "../engine/eventBus";
 import { SymbolStateManager } from "../state/symbolState";
 import { logger } from "../../utils/logger";
-import { msToIso, nowMs } from "../../utils/time";
+import { barEndMs, msToIso, nowMs } from "../../utils/time";
 import { newId } from "../../utils/ids";
 import {
   DEFAULT_FILL_MODEL,
   evaluateFill,
   type FillModelConfig,
 } from "./fillModel";
+import {
+  DEFAULT_EXECUTION,
+  arrivalWindow,
+  decideArrival,
+  restingLimitFill,
+  type ArrivalDecision,
+  type ExecutionConfig,
+} from "./quoteFillModel";
 import type { IExecutionSink } from "./IExecutionSink";
 import { buildClientOrderId } from "../ledger/clientOrderId";
+import { regularSessionHours } from "../market/marketHours";
+import type { HistoricalTickSource } from "../backtest/tickSource";
 import type { OrderIntent, Order, Fill } from "../../types/orders";
 import type { ExecutionMode, Symbol } from "../../types/common";
-import type { Bar } from "../../types/market";
+import type { Bar, Quote } from "../../types/market";
 
 interface QueuedIntent {
   intent: OrderIntent;
   order: Order;
+  /**
+   * "bar": filled by processBarOpen — the bar model, or a quote-model fallback.
+   * "arrival": quote model, to be priced when it reaches the market.
+   * "resting": quote model, a limit waiting for a trade through its price.
+   */
+  stage: "bar" | "arrival" | "resting";
+  /** Shares filled so far; a resting limit fills piecewise. */
+  filledQty: number;
+  /** When a resting limit reached the market. */
+  liveAt?: number;
+  /** Quote-model context copied onto the order's fills. */
+  attribution?: Pick<Fill, "arrivalBid" | "arrivalAsk" | "decisionMid">;
+  /** Why a quote-model order is being priced by the bar model. */
+  fallbackReason?: string;
+}
+
+/** When a decision takes effect: its fill or expiry, its arrival when resting, the decision itself on fallback. */
+function decisionTs(decision: ArrivalDecision, submittedAt: number): number {
+  if (decision.kind === "fallback") return submittedAt;
+  if (decision.kind === "rest") return decision.liveAt;
+  return decision.ts;
+}
+
+/** An arriving order's decision, ready to publish at `ts`. */
+export interface ArrivalPlan {
+  entry: QueuedIntent;
+  decision: ArrivalDecision | { kind: "fallback"; reason: "quote_data_unavailable" };
+  ts: number;
+}
+
+/** A resting limit's fill for one minute, ready to publish at `ts`. */
+export interface RestingPlan {
+  entry: QueuedIntent;
+  ts: number;
+  qty: number;
+}
+
+/** Counts and costs describing how a run's orders were priced. */
+export interface ExecutionReport extends ExecutionConfig {
+  fills: { quote: number; trade: number; bar: number };
+  /** Quote-model orders priced by the bar model, by reason. */
+  fallbacks: Record<string, number>;
+  /** IOC/FOK limits that were not marketable on arrival. */
+  expiredUnmarketable: number;
+  /** Minutes a resting limit could not be checked because trades were unavailable. */
+  tradeDataUnavailable: number;
+  /** Notional-weighted cost of crossing the spread on quote fills, vs the arrival mid (bps). */
+  avgSpreadCostBps: number | null;
+  /** Notional-weighted move of the mid between decision and arrival, against the order (bps). */
+  avgDelayCostBps: number | null;
 }
 
 export class SimulatedExecutionSink implements IExecutionSink {
   private readonly pending: Map<Symbol, QueuedIntent[]> = new Map();
   private readonly fillModel: FillModelConfig;
+  private readonly stats = {
+    fills: { quote: 0, trade: 0, bar: 0 },
+    fallbacks: {} as Record<string, number>,
+    expiredUnmarketable: 0,
+    tradeDataUnavailable: 0,
+    costNotional: 0,
+    spreadCostBpsNotional: 0,
+    delayNotional: 0,
+    delayCostBpsNotional: 0,
+  };
 
   /**
    * @param eventBus - EventBus to publish fill events onto
@@ -53,6 +136,7 @@ export class SimulatedExecutionSink implements IExecutionSink {
    * @param slippageBps - Legacy slippage (overridden by fillModel.slippageBps if provided)
    * @param commissionPerShare - Legacy commission (overridden by fillModel.commissionPerShare)
    * @param fillModel - Optional partial fill-model override
+   * @param execution - How orders are priced; the quote model needs plan/apply calls from the engine
    */
   constructor(
     private readonly eventBus: EventBus,
@@ -61,6 +145,7 @@ export class SimulatedExecutionSink implements IExecutionSink {
     slippageBps = 5,
     commissionPerShare = 0.005,
     fillModel?: Partial<FillModelConfig>,
+    private readonly execution: ExecutionConfig = DEFAULT_EXECUTION,
   ) {
     // Legacy ctor compatibility: when no explicit fillModel override is
     // supplied, the sink behaves like the prior revision — no half-spread,
@@ -99,7 +184,8 @@ export class SimulatedExecutionSink implements IExecutionSink {
 
   /**
    * Submits an intent. The order is created in "submitted" state with zero
-   * fills and queued for execution on the next bar's open (or via flushPending).
+   * fills and queued for execution on the next bar's open (or via flushPending),
+   * or, under the quote model, for pricing when it reaches the market.
    */
   async submitOrder(intent: OrderIntent): Promise<Order> {
     const ts = intent.ts;
@@ -129,7 +215,7 @@ export class SimulatedExecutionSink implements IExecutionSink {
     };
 
     const list = this.pending.get(intent.symbol) ?? [];
-    list.push({ intent, order });
+    list.push({ intent, order, stage: this.execution.model === "quote" ? "arrival" : "bar", filledQty: 0 });
     this.pending.set(intent.symbol, list);
 
     this.eventBus.publish({
@@ -144,15 +230,229 @@ export class SimulatedExecutionSink implements IExecutionSink {
   }
 
   /**
-   * Drains all queued intents for the given symbol, filling each through the
-   * fill model against the new bar.
+   * Drains the bar-model intents queued for the given symbol, filling each
+   * through the fill model against the new bar. Quote-model orders still
+   * waiting to arrive, or resting, stay queued.
+   *
+   * An order fills only against a bar that ends after it was placed. A bar
+   * that completed before the decision — another symbol's bar published later
+   * in the same batch, or arriving later in the same live minute — would fill
+   * it at a price from before the strategy decided.
    */
   processBarOpen(bar: Bar): void {
     const queue = this.pending.get(bar.symbol);
     if (!queue || queue.length === 0) return;
-    this.pending.set(bar.symbol, []);
-    for (const { intent, order } of queue) {
-      this._fillWithModel(intent, order, bar);
+    const end = barEndMs(bar);
+    const due = queue.filter((q) => q.stage === "bar" && end > q.order.submittedAt);
+    if (due.length === 0) return;
+    this.pending.set(bar.symbol, queue.filter((q) => !due.includes(q)));
+    for (const { intent, order, fallbackReason } of due) {
+      this._fillWithModel(intent, order, bar, fallbackReason);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Quote model
+  // ------------------------------------------------------------------
+
+  /** True when quote-model orders are waiting to be priced on arrival. */
+  hasArrivals(): boolean {
+    return this._entries("arrival").length > 0;
+  }
+
+  /** True when quote-model limits are resting. */
+  hasResting(): boolean {
+    return this._entries("resting").length > 0;
+  }
+
+  /**
+   * Prices every order waiting to reach the market, fetching the quotes each
+   * needs, without publishing anything. Apply the plans in order with
+   * applyArrival(), setting the simulated clock to each plan's ts first.
+   * A failed quote fetch makes that order fall back to the bar model.
+   */
+  async planArrivals(source: HistoricalTickSource): Promise<ArrivalPlan[]> {
+    const windows = new Map<string, Promise<Quote[]>>();
+    const plans: ArrivalPlan[] = [];
+    for (const entry of this._entries("arrival")) {
+      const submittedAt = entry.order.submittedAt;
+      const { startMs, endMs } = arrivalWindow(submittedAt, this.execution);
+      const key = `${entry.intent.symbol}|${startMs}|${endMs}`;
+      if (!windows.has(key)) windows.set(key, source.quotes(entry.intent.symbol, startMs, endMs));
+      let quotes: Quote[];
+      try {
+        quotes = await windows.get(key)!;
+      } catch (err) {
+        logger.warn("SimulatedExecutionSink: quotes unavailable — pricing the order with the bar model", {
+          symbol: entry.intent.symbol, at: msToIso(submittedAt), err: String(err),
+        });
+        plans.push({ entry, decision: { kind: "fallback", reason: "quote_data_unavailable" }, ts: submittedAt });
+        continue;
+      }
+      const decision = decideArrival(entry.order, submittedAt, quotes, this.execution);
+      plans.push({ entry, decision, ts: decisionTs(decision, submittedAt) });
+    }
+    return plans.sort((a, b) => a.ts - b.ts);
+  }
+
+  /** Publishes one arrival plan. The caller has set the simulated clock to plan.ts. */
+  applyArrival(plan: ArrivalPlan): void {
+    const { entry, decision } = plan;
+    if (!this._isQueued(entry)) return; // canceled since it was planned
+    if (decision.kind === "fallback") {
+      entry.stage = "bar";
+      entry.fallbackReason = decision.reason;
+      this.stats.fallbacks[decision.reason] = (this.stats.fallbacks[decision.reason] ?? 0) + 1;
+      return;
+    }
+    const attribution = {
+      arrivalBid: decision.arrival.bidPrice,
+      arrivalAsk: decision.arrival.askPrice,
+      ...(decision.decision ? { decisionMid: decision.decision.midPrice } : {}),
+    };
+    if (decision.kind === "rest") {
+      entry.stage = "resting";
+      entry.liveAt = decision.liveAt;
+      entry.attribution = attribution;
+      return;
+    }
+    this._dequeue(entry);
+    if (decision.kind === "expire") {
+      this.stats.expiredUnmarketable++;
+      this.eventBus.publish({ id: newId(), type: "ORDER_EXPIRED", ts: decision.ts, mode: this.mode, orderId: entry.order.id });
+      return;
+    }
+    const qty = entry.order.qty;
+    this._recordQuoteCosts(entry.order.side, qty * decision.price, decision.price, decision.arrival, decision.decision);
+    this._publishFill(entry, qty, decision.price, decision.ts, { source: "quote", ...attribution }, true);
+  }
+
+  /**
+   * For resting limits on the symbols of one completed minute (`bars`), plans
+   * fills from regular-session trades printing through each limit during that
+   * minute. Trades are fetched only when the bar's range reached through the
+   * limit; a minute whose trades cannot be fetched is skipped and counted.
+   */
+  async planResting(bars: readonly Bar[], source: HistoricalTickSource): Promise<RestingPlan[]> {
+    const plans: RestingPlan[] = [];
+    for (const bar of bars) {
+      if (!regularSessionHours.isOpen(bar.ts)) continue;
+      for (const entry of this.pending.get(bar.symbol) ?? []) {
+        if (entry.stage !== "resting") continue;
+        const plan = await this._planRestingMinute(entry, bar, source);
+        if (plan) plans.push(plan);
+      }
+    }
+    return plans.sort((a, b) => a.ts - b.ts);
+  }
+
+  /** One resting limit against one completed minute of its symbol. */
+  private async _planRestingMinute(entry: QueuedIntent, bar: Bar, source: HistoricalTickSource): Promise<RestingPlan | null> {
+    const limit = entry.order.limitPrice!;
+    const minuteEnd = barEndMs(bar);
+    const liveAt = entry.liveAt ?? entry.order.submittedAt;
+    // Nothing printed through the limit this minute if the bar never got there.
+    const reached = entry.order.side === "buy" ? bar.low < limit : bar.high > limit;
+    if (liveAt >= minuteEnd || !reached) return null;
+
+    const fromMs = Math.max(liveAt, bar.ts);
+    try {
+      const trades = await source.trades(bar.symbol, fromMs, minuteEnd);
+      const fill = restingLimitFill(entry.order.side, limit, entry.order.qty - entry.filledQty, fromMs, trades);
+      return fill ? { entry, ts: fill.ts, qty: fill.qty } : null;
+    } catch (err) {
+      this.stats.tradeDataUnavailable++;
+      logger.warn("SimulatedExecutionSink: trades unavailable — resting limit not checked this minute", {
+        symbol: bar.symbol, minute: bar.isoTs, err: String(err),
+      });
+      return null;
+    }
+  }
+
+  /** Publishes one resting-limit fill. The caller has set the simulated clock to plan.ts. */
+  applyResting(plan: RestingPlan): void {
+    const { entry, qty, ts } = plan;
+    if (!this._isQueued(entry) || entry.stage !== "resting") return;
+    const complete = entry.filledQty + qty >= entry.order.qty;
+    if (complete) this._dequeue(entry);
+    this._publishFill(entry, qty, entry.order.limitPrice!, ts, { source: "trade", ...entry.attribution }, complete);
+  }
+
+  /** How this run's orders were priced: the execution config plus counts and costs. */
+  executionReport(): ExecutionReport {
+    const s = this.stats;
+    return {
+      ...this.execution,
+      fills: { ...s.fills },
+      fallbacks: { ...s.fallbacks },
+      expiredUnmarketable: s.expiredUnmarketable,
+      tradeDataUnavailable: s.tradeDataUnavailable,
+      avgSpreadCostBps: s.costNotional > 0 ? s.spreadCostBpsNotional / s.costNotional : null,
+      avgDelayCostBps: s.delayNotional > 0 ? s.delayCostBpsNotional / s.delayNotional : null,
+    };
+  }
+
+  private _entries(stage: QueuedIntent["stage"]): QueuedIntent[] {
+    const out: QueuedIntent[] = [];
+    for (const queue of this.pending.values()) {
+      for (const q of queue) if (q.stage === stage) out.push(q);
+    }
+    return out;
+  }
+
+  private _isQueued(entry: QueuedIntent): boolean {
+    return (this.pending.get(entry.intent.symbol) ?? []).includes(entry);
+  }
+
+  private _dequeue(entry: QueuedIntent): void {
+    const queue = this.pending.get(entry.intent.symbol) ?? [];
+    this.pending.set(entry.intent.symbol, queue.filter((q) => q !== entry));
+  }
+
+  /** Accumulates notional-weighted spread and delay costs, signed against the order. */
+  private _recordQuoteCosts(side: "buy" | "sell", notional: number, price: number, arrival: Quote, decision: Quote | null): void {
+    const sign = side === "buy" ? 1 : -1;
+    const arrivalMid = arrival.midPrice;
+    this.stats.costNotional += notional;
+    this.stats.spreadCostBpsNotional += (sign * (price - arrivalMid) / arrivalMid) * 10_000 * notional;
+    if (decision) {
+      this.stats.delayNotional += notional;
+      this.stats.delayCostBpsNotional += (sign * (arrivalMid - decision.midPrice) / decision.midPrice) * 10_000 * notional;
+    }
+  }
+
+  /** Publishes a fill of `qty` at `price`: the order's last piece as ORDER_FILLED, otherwise a partial. */
+  private _publishFill(
+    entry: QueuedIntent,
+    qty: number,
+    price: number,
+    ts: number,
+    attribution: Partial<Fill>,
+    complete: boolean,
+  ): void {
+    entry.filledQty += qty;
+    const source = attribution.source ?? "bar";
+    this.stats.fills[source]++;
+    const fill: Fill = {
+      id: newId(),
+      orderId: entry.intent.id,
+      symbol: entry.intent.symbol,
+      side: entry.intent.side,
+      qty,
+      price,
+      notional: qty * price,
+      commission: qty * this.fillModel.commissionPerShare,
+      ts,
+      isoTs: msToIso(ts),
+      ...attribution,
+    };
+    if (complete) {
+      this.eventBus.publish({ id: newId(), type: "ORDER_FILLED", ts, mode: this.mode, orderId: entry.order.id, fill });
+    } else {
+      this.eventBus.publish({
+        id: newId(), type: "ORDER_PARTIAL_FILL", ts, mode: this.mode, orderId: entry.order.id,
+        fill, remainingQty: entry.order.qty - entry.filledQty,
+      });
     }
   }
 
@@ -252,9 +552,13 @@ export class SimulatedExecutionSink implements IExecutionSink {
   // ------------------------------------------------------------------
 
   /** Runs the configured fill model against a bar and emits fill/reject events. */
-  private _fillWithModel(intent: OrderIntent, order: Order, bar: Bar): void {
+  private _fillWithModel(intent: OrderIntent, order: Order, bar: Bar, fallbackReason?: string): void {
     const decision = evaluateFill(intent, bar, this.fillModel);
     const ts = bar.ts;
+    // Under the quote model every fill says what priced it; bar-model runs stay as they were.
+    const attribution: Partial<Fill> = this.execution.model === "quote"
+      ? { source: "bar", ...(fallbackReason ? { fallbackReason } : {}) }
+      : {};
 
     if (decision.outcome === "rejected" || decision.fillPrice === null) {
       order.status = "rejected";
@@ -288,7 +592,9 @@ export class SimulatedExecutionSink implements IExecutionSink {
       commission: decision.filledQty * this.fillModel.commissionPerShare,
       ts,
       isoTs: msToIso(ts),
+      ...attribution,
     };
+    this.stats.fills.bar++;
 
     if (decision.outcome === "partial") {
       this.eventBus.publish({

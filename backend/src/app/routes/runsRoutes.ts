@@ -19,7 +19,11 @@ router.get("/:runId/fills", requireAuth, getRunFills);
 /** GET /api/runs/:runId/signals — the run's latest signals and their outcomes */
 router.get("/:runId/signals", requireAuth, getRunSignals);
 
-/** POST /api/runs/:runId/compare-backtest — queue a backtest of the run's exact window */
+/**
+ * POST /api/runs/:runId/compare-backtest — queue a backtest of the run's exact window.
+ * Body: { force?: boolean, execution?: { model: "quote", ... } } — quote fills are
+ * kept as a separate comparison, to check them against the run's real fills.
+ */
 router.post("/:runId/compare-backtest", requireAuth, compareRunWithBacktest);
 
 export default router;

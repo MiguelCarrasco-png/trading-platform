@@ -868,6 +868,7 @@ export function backtestConfigKey(config: BacktestConfig): string {
     strategyConfig: config.strategyConfig,
     riskConfig: config.riskConfig ?? null,
     fillModel: config.fillModel ?? null,
+    execution: config.execution ?? null,
     riskFreeRateAnnual: config.riskFreeRateAnnual ?? 0,
     benchmarkCurve: config.benchmarkCurve ?? null,
   });

@@ -411,6 +411,24 @@ describe('BacktestEngine: bars are processed when they complete', () => {
     expect(result.fills![0].price).toBe(101);
   });
 
+  it('an order for a symbol published later in the same batch fills at its next open, not that bar', async () => {
+    // AAA's bar is published before ZZZ's; a decision on AAA orders ZZZ.
+    const bars = [
+      makeBar('AAA', T0, 10), makeBar('ZZZ', T0, 50),
+      makeBar('AAA', T0 + MIN, 11), makeBar('ZZZ', T0 + MIN, 51),
+    ];
+    const crossSymbol = makeLastBarSignalStrategy('ZZZ', -1);
+    crossSymbol.config.symbols.push('AAA');
+    crossSymbol.evaluate = (ctx) => (ctx.symbol === 'AAA' && ctx.symbolState.get('AAA')?.latestBar?.ts === T0
+      ? { id: 'x' as UUID, strategyId: 'last-bar-strat', strategyType: 'pairs_trading', symbol: 'ZZZ', direction: 'long', qty: 1, ts: T0 }
+      : null);
+    const result = await makeEngineWithBars(bars).run(
+      makeConfig({ slippageBps: 0, commissionPerShare: 0, fillModel: { halfSpreadBps: 0 } }),
+      () => [crossSymbol],
+    );
+    expect(result.fills!.map((f) => [f.symbol, f.price, f.ts])).toEqual([['ZZZ', 51, T0 + MIN]]);
+  });
+
   it('records the engine version on the result', async () => {
     const result = await makeEngineWithBars([makeBar('SPY', T0)]).run(makeConfig(), () => []);
     expect(result.config.engineVersion).toBe(BACKTEST_ENGINE_VERSION);

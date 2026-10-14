@@ -14,6 +14,7 @@ import type { BaseStrategyConfig } from "./strategy";
 import type { PortfolioSnapshot, PerformanceMetrics } from "./portfolio";
 import type { Order, Fill } from "./orders";
 import type { FillModelConfig } from "../core/execution/fillModel";
+import type { ExecutionConfig } from "../core/execution/quoteFillModel";
 import type { ValidationIssue, ValidationMetadata } from "../core/backtest/dataValidation";
 import type { RiskConfig } from "./risk";
 
@@ -76,6 +77,13 @@ export interface BacktestConfig {
    * `commissionPerShare` fields so existing configs keep working.
    */
   fillModel?: Partial<FillModelConfig>;
+  /**
+   * How orders are priced. Absent: the bar model (fillModel above). With
+   * model "quote", fills use real quotes and trades around each order
+   * (quoteFillModel.ts), falling back to the bar model per order when none
+   * are available. Stored fully resolved; part of the dedup fingerprint.
+   */
+  execution?: ExecutionConfig;
   /**
    * Annualized risk-free rate used by Sharpe/Sortino. Default: 0.
    */

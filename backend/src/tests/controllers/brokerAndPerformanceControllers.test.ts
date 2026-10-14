@@ -139,6 +139,26 @@ describe("compareRunWithBacktest", () => {
     expect(jobs.enqueueBacktestJob).not.toHaveBeenCalled();
   });
 
+  it("keeps a quote-fill comparison separate from the bar-model one", async () => {
+    (repos.getStrategyRunById as jest.Mock).mockResolvedValue({ ...pairsRun, meta: { compareBacktestId: "bt-bar" } });
+    const res = mockRes();
+    await compareRunWithBacktest(postReq("run-p", { execution: { model: "quote", latencyMs: 300 } }), res);
+    expect(res.status).toHaveBeenCalledWith(202);
+    const { config } = (jobs.enqueueBacktestJob as jest.Mock).mock.calls[0][0];
+    expect(config.execution).toMatchObject({ model: "quote", latencyMs: 300, feed: "sip" });
+    expect(repos.updateStrategyRun).toHaveBeenCalledWith("run-p", {
+      meta: { compareBacktestId: "bt-bar", compareQuoteBacktestId: config.id },
+    });
+  });
+
+  it("rejects an invalid execution setting", async () => {
+    (repos.getStrategyRunById as jest.Mock).mockResolvedValue(pairsRun);
+    const res = mockRes();
+    await compareRunWithBacktest(postReq("run-p", { execution: { model: "quote", latencyMs: -1 } }), res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(jobs.enqueueBacktestJob).not.toHaveBeenCalled();
+  });
+
   it("says plainly when the strategy type cannot be backtested", async () => {
     (repos.getStrategyRunById as jest.Mock).mockResolvedValue({ ...pairsRun, strategyType: "minute_reversal" });
     const res = mockRes();

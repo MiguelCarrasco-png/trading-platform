@@ -24,6 +24,7 @@ import { BacktestEngine } from "../core/backtest/backtestEngine";
 import { BacktestLoader } from "../core/backtest/backtestLoader";
 import { buildBacktestStrategies } from "../core/backtest/strategyFactory";
 import { SupabaseBarCache } from "../adapters/supabase/barCacheRepository";
+import { createTickSource } from "../adapters/alpaca/historicalData";
 import {
   claimBacktestJob,
   touchBacktestJob,
@@ -73,7 +74,7 @@ async function main(): Promise<void> {
       release: releaseBacktestJob,
       sweep: () => sweepBacktestJobs(KEEP_FINISHED_HOURS),
     },
-    () => new BacktestEngine(new BacktestLoader({ cache: barCache })),
+    () => new BacktestEngine(new BacktestLoader({ cache: barCache }), { tickSource: createTickSource }),
     buildBacktestStrategies,
     {
       heartbeatMs: Math.max(1_000, Math.floor((LEASE_SECONDS * 1000) / 4)),
