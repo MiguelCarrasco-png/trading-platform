@@ -5,6 +5,11 @@ containers and Docker Compose for the application processes. This keeps the
 database/auth stack aligned with Supabase releases without copying its internal
 Compose file into this repository.
 
+No Docker available (locked-down laptop, Docker Desktop won't start, etc)?
+See [local-development-no-docker.md](./local-development-no-docker.md) instead —
+same migrations and app code, a hosted Supabase project instead of the local
+container, processes run directly with `npm run dev:*`.
+
 ## Prerequisites
 
 - Node.js 22+
