@@ -29,7 +29,10 @@ export interface RawTick {
 // Quote (top-of-book bid/ask snapshot)
 // ------------------------------------------------------------------
 
-/** A normalized best bid/offer (BBO) quote snapshot for a symbol. */
+/**
+ * A normalized top-of-book quote snapshot for a symbol. On Alpaca's IEX feed
+ * this is IEX's own book, not the consolidated NBBO.
+ */
 export interface Quote {
   /** Ticker symbol */
   symbol: Symbol;
@@ -37,9 +40,13 @@ export interface Quote {
   bidPrice: number;
   /** Ask price */
   askPrice: number;
-  /** Bid size (shares/units) */
+  /**
+   * Bid size in the provider's unit. Alpaca's stock stream reports quote sizes
+   * in round lots, not shares (see QUOTE_SIZE_UNIT in the normalizer). Only
+   * ratios (microPrice, imbalance) are unit-free.
+   */
   bidSize: number;
-  /** Ask size (shares/units) */
+  /** Ask size in the provider's unit (round lots on Alpaca). */
   askSize: number;
   /** Midprice computed as (bid + ask) / 2 */
   midPrice: number;
@@ -56,14 +63,38 @@ export interface Quote {
   ts: EpochMs;
   /** ISO 8601 timestamp from exchange */
   isoTs: ISOTimestamp;
-  /** Exchange that produced the quote */
+  /** Exchange that produced the quote (unused by Alpaca stock quotes, which report per-side venues) */
   exchange?: string;
-  /** Venue showing the best bid (consolidated quotes name each side's venue) */
+  /** Venue of the bid (Alpaca `bx`) */
   bidExchange?: string;
-  /** Venue showing the best ask */
+  /** Venue of the ask (Alpaca `ax`) */
   askExchange?: string;
+  /** Tape (A, B, C) */
+  tape?: string;
   /** Conditions/flags from the exchange */
   conditions?: string[];
+}
+
+/**
+ * Why a market-data message is unusable or suspicious. "reject" issues are
+ * dropped when the adapter's invalid-data policy is "quarantine"; "flag" issues
+ * are legitimate market states that are only counted.
+ */
+export type MarketDataIssueCode =
+  | "MISSING_FIELD"
+  | "BAD_TIMESTAMP"
+  | "NON_FINITE_PRICE"
+  | "NON_POSITIVE_PRICE"
+  | "ONE_SIDED_QUOTE"
+  | "CROSSED_QUOTE"
+  | "NEGATIVE_SIZE"
+  | "INVALID_BAR_RANGE"
+  | "LOCKED_QUOTE"
+  | "ZERO_SIZE";
+
+export interface MarketDataIssue {
+  code: MarketDataIssueCode;
+  severity: "reject" | "flag";
 }
 
 // ------------------------------------------------------------------

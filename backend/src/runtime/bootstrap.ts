@@ -123,6 +123,7 @@ import type { Symbol } from "../types/common";
 import { newId } from "../utils/ids";
 import { nowMs, lockClockForLive } from "../utils/time";
 import { logger } from "../utils/logger";
+import { RuntimeLatency } from "./latencyInstrumentation";
 
 export interface RuntimeConfig {
   /** "paper" uses Alpaca paper endpoints; "live" uses real-money endpoints. */
@@ -211,11 +212,15 @@ export async function bootstrapRuntime(config: RuntimeConfig): Promise<void> {
   const orderState = new OrderStateManager();
   const riskEngine = new RiskEngine();
 
+  // Opt-in latency instrumentation (LATENCY_PROBE=1); observes only.
+  const latency = env.latencyProbe ? new RuntimeLatency(mode, target) : null;
+  await latency?.prepare();
+
   // Market data: Alpaca's stream when data keys exist; otherwise (sim only) a
   // replay of cached bars through the same events.
   const hasDataKeys = !!(env.alpacaDataKey && env.alpacaDataSecret);
   const marketDataAdapter = hasDataKeys
-    ? new AlpacaMarketDataAdapter(eventBus, mode)
+    ? new AlpacaMarketDataAdapter(eventBus, mode, { invalidData: env.marketDataInvalidPolicy, ...latency?.adapterOptions() })
     : new ReplayBarFeed(eventBus, mode, new SupabaseBarCache(), replayWindow());
 
   // Orders: a sim book fills locally on the next bar; the alpaca targets send
@@ -226,9 +231,10 @@ export async function bootstrapRuntime(config: RuntimeConfig): Promise<void> {
     : new SimulatedExecutionSink(eventBus, symbolState, mode, 5, 0.005, {});
   // Every order is written to the ledger before it is sent; if it cannot be,
   // it is not sent (core/execution/journaledExecution.ts).
+  const orderJournal = new SupabaseOrderJournal(brokerAccount, isPaper);
   const sink = new JournaledExecutionSink(
-    brokerSink,
-    new SupabaseOrderJournal(brokerAccount, isPaper),
+    latency ? latency.wrapSink(brokerSink) : brokerSink,
+    latency ? latency.wrapJournal(orderJournal) : orderJournal,
     (intent, err) => eventBus.publish({
       id: newId(), type: "RISK_REJECTED", ts: nowMs(), mode,
       strategyId: intent.strategyId,
@@ -301,7 +307,7 @@ export async function bootstrapRuntime(config: RuntimeConfig): Promise<void> {
     riskEngine,
     executionEngine,
     mode,
-    { maxConsecutiveErrors: env.maxConsecutiveStrategyErrors },
+    { maxConsecutiveErrors: env.maxConsecutiveStrategyErrors, ...(latency ? { probe: latency.probe } : {}) },
   );
 
   // ------------------------------------------------------------------
@@ -436,6 +442,7 @@ export async function bootstrapRuntime(config: RuntimeConfig): Promise<void> {
   }
 
   orchestrator.start();
+  latency?.start(eventBus);
   ledger.start();
 
   // This process is now trading. Claim the clock so that a backtest started
@@ -639,6 +646,7 @@ export async function bootstrapRuntime(config: RuntimeConfig): Promise<void> {
     ledger.stop();
     await rejections.stop();
     await signals.stop();
+    await latency?.stop();
     // Hand leases back so a successor adopts these runs now instead of after
     // they lapse. The rows stay "running" — they are paused, not stopped.
     await liveRuns.releaseAll();

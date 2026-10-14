@@ -48,6 +48,10 @@ frontend/next-env.d.ts
 supabase/.branches/
 supabase/.temp/
 
+# ── Latency benchmark outputs (large, machine-specific; see docs/guides/latency-benchmark.md)
+artifacts/
+backend/artifacts/
+
 # ── Test / coverage ───────────────────────────────────────────────────────────
 coverage/
 backend/coverage/

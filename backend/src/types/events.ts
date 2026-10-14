@@ -67,6 +67,24 @@ export type EventType =
 // Base Event
 // ------------------------------------------------------------------
 
+/**
+ * Latency-benchmark correlation: links a market-data event to the strategy
+ * evaluations, intents and orders it caused. Set only when a LatencyProbe is
+ * attached (core/telemetry); strategies and business logic never read it.
+ */
+export interface EventTrace {
+  /**
+   * `<connectionEpoch>:<frameSequence>` of the originating frame, with
+   * `:<indexInFrame>` appended at stage-level detail.
+   */
+  id: string;
+  /**
+   * Monotonic receipt time of the originating frame, ns. A Number so events
+   * stay JSON-serializable; exact for ~104 days of host uptime.
+   */
+  rxMonoNs?: number;
+}
+
 /** Base shape shared by every internal event. */
 export interface BaseEvent {
   /** Unique event ID */
@@ -79,6 +97,8 @@ export interface BaseEvent {
   mode: ExecutionMode;
   /** Simulated clock time for backtest/replay modes (Unix ms) */
   simulatedTs?: EpochMs;
+  /** Benchmark trace correlation; absent unless latency instrumentation is on. */
+  trace?: EventTrace;
 }
 
 // ------------------------------------------------------------------

@@ -38,6 +38,11 @@ npm run test:http
 npm run test:ci
 ```
 
+`test:unit` also runs the latency-benchmark suites (`src/tests/bench`, telemetry,
+recorder, normalizer validation). They need no credentials and send nothing.
+Benchmark runs themselves are separate commands; see
+[latency-benchmark.md](latency-benchmark.md).
+
 ## Coverage Thresholds
 
 The CI suite enforces an **80% line coverage** threshold on the following critical directories:

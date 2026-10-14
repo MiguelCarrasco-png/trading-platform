@@ -133,7 +133,6 @@ free rate limit. A re-run took under a second.
 
 - Strategies triggered by quotes or trades in backtests. That needs every quote
   and trade replayed through the engine, not sparse windows: millions of events
-  per liquid symbol-day. It also needs an O(1) rolling window, because
-  `RollingTimeWindow` copies its array on every eviction.
+  per liquid symbol-day.
 - Stop orders (both models) and DAY expiry at the close.
 - The local `sim` runtime still uses the bar model on live bars.
