@@ -32,8 +32,8 @@ jest.mock('../../core/backtest/backtestLoader', () => ({
 }));
 
 import { BacktestLoader } from '../../core/backtest/backtestLoader';
-import { BacktestEngine } from '../../core/backtest/backtestEngine';
-import { lockClockForLive, unlockClockForLive } from '../../utils/time';
+import { BacktestEngine, BACKTEST_ENGINE_VERSION } from '../../core/backtest/backtestEngine';
+import { lockClockForLive, unlockClockForLive, nowMs } from '../../utils/time';
 import type { BacktestConfig } from '../../types/backtest';
 import type { PortfolioSnapshot } from '../../types/portfolio';
 import type { Fill } from '../../types/orders';
@@ -177,15 +177,15 @@ describe('run(): result structure', () => {
     expect(result.event_count).toBe(3);
   });
 
-  it('per-bar snapshots have timestamps matching bar timestamps', async () => {
+  it('per-bar snapshots are stamped when each 1-minute bar completes', async () => {
     const bars = [makeBar('SPY', 1_000), makeBar('SPY', 2_000), makeBar('SPY', 3_000)];
     const engine = makeEngineWithBars(bars);
     const result = await engine.run(makeConfig(), () => []);
-    expect(result.equity_curve[0].ts).toBe(1_000);
-    expect(result.equity_curve[1].ts).toBe(2_000);
-    expect(result.equity_curve[2].ts).toBe(3_000);
+    expect(result.equity_curve[0].ts).toBe(61_000);
+    expect(result.equity_curve[1].ts).toBe(62_000);
+    expect(result.equity_curve[2].ts).toBe(63_000);
     // Final MTM entry has a real-clock timestamp at or after the last bar
-    expect(result.equity_curve[3].ts).toBeGreaterThanOrEqual(3_000);
+    expect(result.equity_curve[3].ts).toBeGreaterThanOrEqual(63_000);
   });
 
   it('final_portfolio matches the last equity curve entry', async () => {
@@ -211,7 +211,7 @@ describe('run(): result structure', () => {
     const engine = makeEngineWithBars([]);
     const result = await engine.run(cfg, () => []);
     expect(result.id).toBe('bt-unique');
-    expect(result.config).toBe(cfg);
+    expect(result.config).toEqual({ ...cfg, engineVersion: BACKTEST_ENGINE_VERSION });
   });
 
   it('event_count reflects bar count not equity curve length', async () => {
@@ -384,6 +384,43 @@ function makeLastBarSignalStrategy(symbol: string, lastBarTs: number): IStrategy
     },
   };
 }
+
+describe('BacktestEngine: bars are processed when they complete', () => {
+  const MIN = 60_000;
+  const T0 = Date.parse('2024-01-01T15:00:00Z');
+
+  it('strategies evaluate at the bar end — the 15:00 bar at 15:01 — not its start', async () => {
+    const seen: number[] = [];
+    const recorder = makeLastBarSignalStrategy('SPY', -1);
+    recorder.evaluate = () => { seen.push(nowMs()); return null; };
+    await makeEngineWithBars([makeBar('SPY', T0), makeBar('SPY', T0 + MIN)]).run(makeConfig(), () => [recorder]);
+    expect(seen).toEqual([T0 + MIN, T0 + 2 * MIN]);
+  });
+
+  it('an order decided on a bar clears the stale-quote check and fills at the next open', async () => {
+    const bars = [makeBar('SPY', T0, 100), makeBar('SPY', T0 + MIN, 101)];
+    const result = await makeEngineWithBars(bars).run(
+      makeConfig({
+        slippageBps: 0, commissionPerShare: 0, fillModel: { halfSpreadBps: 0 },
+        riskConfig: { staleQuoteThresholdMs: 10_000 },
+      }),
+      () => [makeLastBarSignalStrategy('SPY', T0)],
+    );
+    expect(result.orders).toHaveLength(1);
+    expect(result.orders![0].status).toBe('filled');
+    expect(result.fills![0].price).toBe(101);
+  });
+
+  it('records the engine version on the result', async () => {
+    const result = await makeEngineWithBars([makeBar('SPY', T0)]).run(makeConfig(), () => []);
+    expect(result.config.engineVersion).toBe(BACKTEST_ENGINE_VERSION);
+  });
+
+  it('refuses a job queued under different engine semantics', async () => {
+    await expect(makeEngineWithBars([]).run(makeConfig({ engineVersion: 1 }), () => []))
+      .rejects.toThrow(`queued for engine v1, but this worker runs v${BACKTEST_ENGINE_VERSION}`);
+  });
+});
 
 describe('BacktestEngine: terminal pending order cleanup', () => {
   it('an order generated on the final bar ends with terminal status, not "submitted"', async () => {

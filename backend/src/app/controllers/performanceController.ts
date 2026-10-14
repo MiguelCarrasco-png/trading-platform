@@ -20,6 +20,7 @@ import { enqueueBacktestJob } from "../../adapters/supabase/backtestJobRepositor
 import { SupabaseBarCache } from "../../adapters/supabase/barCacheRepository";
 import { BacktestLoader } from "../../core/backtest/backtestLoader";
 import { BACKTESTABLE_TYPES } from "../../core/backtest/strategyFactory";
+import { BACKTEST_ENGINE_VERSION } from "../../core/backtest/backtestEngine";
 import { benchmarkPnl, loadBenchmarkCurve } from "../../core/analytics/benchmark";
 import { env } from "../../config/env";
 import { newId } from "../../utils/ids";
@@ -218,6 +219,7 @@ export async function compareRunWithBacktest(req: Request, res: Response): Promi
       slippageBps: 5,
       commissionPerShare: 0.005,
       dataGranularity: "bar",
+      engineVersion: BACKTEST_ENGINE_VERSION,
       strategyId: run.strategyId,
       strategyVersionId: run.versionId,
       strategyVersion: run.strategyVersion,

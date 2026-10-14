@@ -37,7 +37,7 @@ import { buildTradeLedger, tradeStats } from "../analytics/tradeLedger";
 import { BacktestLoader } from "./backtestLoader";
 import { BACKTEST_RISK_CONFIG } from "../../config/defaults";
 import { logger } from "../../utils/logger";
-import { nowMs, setClockOverride, isClockLockedForLive } from "../../utils/time";
+import { nowMs, setClockOverride, isClockLockedForLive, barEndMs } from "../../utils/time";
 import { newId } from "../../utils/ids";
 import type { BacktestConfig, BacktestResult } from "../../types/backtest";
 import type { PortfolioSnapshot } from "../../types/portfolio";
@@ -54,6 +54,16 @@ import type { BacktestProgressPoint } from "./backtestStreamManager";
  * the job lease and get the run reclaimed by another worker mid-flight.
  */
 const YIELD_EVERY_MS = 200;
+
+/**
+ * Version of the simulation semantics, recorded on every config and result
+ * and part of the dedup fingerprint, so a result produced under different
+ * semantics is never reused. A config without one predates versioning (v1).
+ *   v1: bars processed at their start time.
+ *   v2: bars processed when they complete (start + timeframe), the moment
+ *       their close is known; strategies, risk and orders see that time.
+ */
+export const BACKTEST_ENGINE_VERSION = 2;
 
 export interface BacktestRunOptions {
   /** Aborting stops the run at the next yield point with an AbortError. */
@@ -142,6 +152,15 @@ export class BacktestEngine {
       );
     }
     const effectiveStrategyVersion = builtVersion ?? config.strategyVersion;
+    // Same deploy race for the engine itself: the API fingerprinted this job
+    // under its own engine version, so a worker running other semantics must
+    // not produce the result.
+    if (config.engineVersion != null && config.engineVersion !== BACKTEST_ENGINE_VERSION) {
+      throw new Error(
+        `Backtest was queued for engine v${config.engineVersion}, but this worker runs ` +
+        `v${BACKTEST_ENGINE_VERSION}. Re-run it once the deploy has finished.`,
+      );
+    }
     for (const strategy of strategies) {
       const budget = (strategy.config as BaseStrategyConfig).riskBudget;
       if (budget) riskEngine.registerStrategyBudget({ ...budget, strategyId: strategy.id });
@@ -254,7 +273,9 @@ export class BacktestEngine {
         if (currentBatch.length > 0) batches.push(currentBatch);
 
         for (const batch of batches) {
-          simulatedNow = batch[0].ts;
+          // A batch becomes known when its bars complete — the 10:00 bar at
+          // 10:01 — so strategies, risk checks and new orders see that time.
+          simulatedNow = barEndMs(batch[0]);
 
           // Phase 1: flush queued orders against each bar in this batch BEFORE
           // exposing the new bars to strategies. The sink subscribes to
@@ -395,9 +416,11 @@ export class BacktestEngine {
 
     const result: BacktestResult = {
       id: config.id,
-      config: effectiveStrategyVersion != null
-        ? { ...config, strategyVersion: effectiveStrategyVersion }
-        : config,
+      config: {
+        ...config,
+        ...(effectiveStrategyVersion != null ? { strategyVersion: effectiveStrategyVersion } : {}),
+        engineVersion: BACKTEST_ENGINE_VERSION,
+      },
       status: "completed",
       started_at: startedAt,
       completed_at: completedAt,

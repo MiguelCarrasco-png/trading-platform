@@ -4,6 +4,7 @@ import {
   isStale,
   formatTs,
   timeframeToMs,
+  barEndMs,
   startOfDayUtcMs,
 } from '../../utils/time';
 
@@ -78,8 +79,29 @@ describe('timeframeToMs', () => {
     expect(timeframeToMs('2d')).toBe(172_800_000);
   });
 
+  it("converts Alpaca's REST timeframe names", () => {
+    expect(timeframeToMs('1Min')).toBe(60_000);
+    expect(timeframeToMs('15Min')).toBe(900_000);
+    expect(timeframeToMs('1Hour')).toBe(3_600_000);
+    expect(timeframeToMs('1Day')).toBe(86_400_000);
+  });
+
   it('throws for an unknown timeframe unit', () => {
     expect(() => timeframeToMs('1x')).toThrow('Unknown timeframe unit');
+    expect(() => timeframeToMs('1Month')).toThrow('Unknown timeframe unit');
+    expect(() => timeframeToMs('Min')).toThrow('Unknown timeframe unit');
+  });
+});
+
+describe('barEndMs', () => {
+  it('is the start plus the timeframe, in either naming', () => {
+    expect(barEndMs({ ts: 600_000, timeframe: '1Min' })).toBe(660_000);
+    expect(barEndMs({ ts: 600_000, timeframe: '1m' })).toBe(660_000);
+    expect(barEndMs({ ts: 600_000, timeframe: '5Min' })).toBe(900_000);
+  });
+
+  it('treats an unrecognised timeframe as one minute', () => {
+    expect(barEndMs({ ts: 600_000, timeframe: '' })).toBe(660_000);
   });
 });
 

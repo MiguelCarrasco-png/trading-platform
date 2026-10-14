@@ -58,6 +58,12 @@ export interface BacktestConfig {
    * what a proposal's "backtests for this version" lookup keys on.
    */
   strategyVersionId?: UUID;
+  /**
+   * Simulation semantics this run was queued under (BACKTEST_ENGINE_VERSION),
+   * stamped by the API and recorded on the result. Absent means v1, from
+   * before the field existed. Part of the dedup fingerprint.
+   */
+  engineVersion?: number;
   /** Build that actually executed the simulation (stamped by the worker). */
   runtimeOrigin?: string;
   buildSha?: string;

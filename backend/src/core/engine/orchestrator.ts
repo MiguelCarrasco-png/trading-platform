@@ -505,8 +505,7 @@ export class Orchestrator {
     for (const leg of legs) {
       const symState = this.symbolState.get(leg.symbol);
       const mid = symState?.latestMid ?? symState?.latestBar?.close ?? undefined;
-      const quoteTs = symState?.latestQuote?.ts ?? symState?.latestBar?.ts ?? undefined;
-      const result = this.riskEngine.preflightCheck(leg, portfolio, mid, quoteTs);
+      const result = this.riskEngine.preflightCheck(leg, portfolio, mid, symState?.latestMidTs ?? undefined);
       if (!result.passed) {
         return {
           intent: leg,
@@ -577,9 +576,10 @@ export class Orchestrator {
       : event.payload;
     const portfolio = this.portfolioState.getSnapshot();
 
-    // Stage 1: signal-time risk checks (kill switch, cooldown, position/cash/concentration)
-    const quoteTs = symState?.latestQuote?.ts ?? symState?.latestBar?.ts ?? undefined;
-    const riskResult = this.riskEngine.check(intent, portfolio, mid ?? undefined, quoteTs);
+    // Stage 1: signal-time risk checks (kill switch, cooldown, position/cash/concentration).
+    // Staleness is measured from when the reference price became known — a bar
+    // close is known at the bar's end, not its start.
+    const riskResult = this.riskEngine.check(intent, portfolio, mid ?? undefined, symState?.latestMidTs ?? undefined);
     if (!riskResult.passed) {
       this.eventBus.publish({
         id: newId(), type: "RISK_REJECTED", ts: nowMs(), mode: this.mode,

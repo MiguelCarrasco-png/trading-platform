@@ -31,7 +31,7 @@ import { RollingTimeWindow, RollingNumericWindow } from "../../core/state/rollin
 import { computeZScoreFromStats } from "../../services/indicators/zscore";
 import { computeEngleGranger } from "../../services/indicators/cointegration";
 import { logger } from "../../utils/logger";
-import { nowMs } from "../../utils/time";
+import { nowMs, barEndMs } from "../../utils/time";
 import type { EvaluationContext } from "../base/strategy";
 import type { StrategySignal, StrategyType } from "../../types/strategy";
 import type { Bar, MarketEventKind } from "../../types/market";
@@ -178,17 +178,18 @@ export class PairsStrategy extends BaseStrategy {
 
     let i = 0;
     while (i < bars.length) {
-      const ts = bars[i].ts;
+      const first = bars[i];
       let close1: number | null = null;
       let close2: number | null = null;
-      for (; i < bars.length && bars[i].ts === ts; i++) {
+      for (; i < bars.length && bars[i].ts === first.ts; i++) {
         if (bars[i].symbol === leg1Symbol) close1 = bars[i].close;
         else if (bars[i].symbol === leg2Symbol) close2 = bars[i].close;
       }
       const lastTs = this.state.lastObservationTs;
-      if (close1 !== null && close2 !== null && (lastTs === null || ts > lastTs)) {
-        this._ingest(ts, close1, close2);
-        this.state.lastObservationTs = ts;
+      if (close1 !== null && close2 !== null && (lastTs === null || first.ts > lastTs)) {
+        // Stamped when the minute completed, as evaluate() sees it.
+        this._ingest(barEndMs(first), close1, close2);
+        this.state.lastObservationTs = first.ts;
         primed++;
       }
     }
