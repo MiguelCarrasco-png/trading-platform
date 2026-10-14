@@ -24,6 +24,8 @@ interface AlpacaRawQuote {
   as: number;   // ask size
   t: string;    // timestamp ISO
   x?: string;   // exchange
+  bx?: string;  // bid exchange
+  ax?: string;  // ask exchange
   c?: string[]; // conditions
 }
 
@@ -85,6 +87,8 @@ export function normalizeQuote(raw: AlpacaRawQuote): Quote {
     ts,
     isoTs: raw.t,
     exchange: raw.x,
+    bidExchange: raw.bx,
+    askExchange: raw.ax,
     conditions: raw.c,
   };
 }

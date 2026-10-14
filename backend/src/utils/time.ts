@@ -106,6 +106,21 @@ export function isoToMs(iso: ISOTimestamp): EpochMs {
 }
 
 /**
+ * Nanoseconds since the epoch for an RFC 3339 timestamp such as Alpaca's
+ * "2026-10-07T13:31:00.123456789Z". Use it to order ticks: Date.parse drops
+ * everything past the millisecond, and the strings themselves do not sort,
+ * since trailing fraction digits may be trimmed ("...:00Z" vs "...:00.1Z").
+ * @param t - RFC 3339 timestamp
+ * @returns Nanoseconds since the Unix epoch
+ */
+export function rfc3339ToNanos(t: ISOTimestamp): bigint {
+  const match = /^(.+T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/.exec(t);
+  if (!match) return BigInt(Date.parse(t)) * 1_000_000n;
+  const wholeSecondsMs = Date.parse(match[1] + match[3]);
+  return BigInt(wholeSecondsMs) * 1_000_000n + BigInt((match[2] ?? "").padEnd(9, "0"));
+}
+
+/**
  * Converts a Unix millisecond timestamp to an ISO 8601 string.
  * @param ms - Unix timestamp in milliseconds
  * @returns ISO 8601 string

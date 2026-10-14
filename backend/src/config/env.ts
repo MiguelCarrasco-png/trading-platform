@@ -83,6 +83,14 @@ export const env = {
   alpacaDataStreamUrl: optional("ALPACA_DATA_STREAM_URL", "wss://stream.data.alpaca.markets/v2/iex"),
   alpacaPaperStreamUrl: optional("ALPACA_PAPER_STREAM_URL", "wss://paper-api.alpaca.markets/stream"),
   alpacaLiveStreamUrl: optional("ALPACA_LIVE_STREAM_URL", "wss://api.alpaca.markets/stream"),
+  /**
+   * Historical market-data requests per minute this process may make. Alpaca's
+   * free plan allows 200 across everything on the key; the default leaves room
+   * for the bar loader.
+   */
+  alpacaDataRequestsPerMinute: optionalNumber("ALPACA_DATA_REQUESTS_PER_MINUTE", 190),
+  /** Local cache of historical quotes and trades (relative paths resolve from the process's cwd). */
+  marketDataDir: optional("MARKET_DATA_DIR", ".local/marketdata"),
 
   // Supabase
   supabaseUrl: requireEnv("SUPABASE_URL"),

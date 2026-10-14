@@ -5,6 +5,7 @@ import {
   formatTs,
   timeframeToMs,
   barEndMs,
+  rfc3339ToNanos,
   startOfDayUtcMs,
 } from '../../utils/time';
 
@@ -90,6 +91,19 @@ describe('timeframeToMs', () => {
     expect(() => timeframeToMs('1x')).toThrow('Unknown timeframe unit');
     expect(() => timeframeToMs('1Month')).toThrow('Unknown timeframe unit');
     expect(() => timeframeToMs('Min')).toThrow('Unknown timeframe unit');
+  });
+});
+
+describe('rfc3339ToNanos', () => {
+  it('keeps the sub-millisecond digits Date.parse drops', () => {
+    const ms = Date.parse('2026-10-07T14:00:00Z');
+    expect(rfc3339ToNanos('2026-10-07T14:00:00.123456789Z')).toBe(BigInt(ms) * 1_000_000n + 123_456_789n);
+    expect(rfc3339ToNanos('2026-10-07T14:00:00.1Z')).toBe(BigInt(ms) * 1_000_000n + 100_000_000n);
+    expect(rfc3339ToNanos('2026-10-07T14:00:00Z')).toBe(BigInt(ms) * 1_000_000n);
+  });
+
+  it('honours a numeric offset', () => {
+    expect(rfc3339ToNanos('2026-10-07T10:00:00.5-04:00')).toBe(rfc3339ToNanos('2026-10-07T14:00:00.5Z'));
   });
 });
 

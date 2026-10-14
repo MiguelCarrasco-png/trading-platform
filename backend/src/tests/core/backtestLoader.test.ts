@@ -49,6 +49,13 @@ describe('loadBars: success', () => {
     expect(bars).toHaveLength(0);
   });
 
+  it('requests the consolidated (SIP) feed explicitly', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ bars: [] }) });
+    await new BacktestLoader().loadBars(['SPY'], START, END);
+    const url = new URL((global.fetch as jest.Mock).mock.calls[0][0] as string);
+    expect(url.searchParams.get('feed')).toBe('sip');
+  });
+
   it('normalizes raw Alpaca bars and attaches the correct symbol', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       ok: true,
