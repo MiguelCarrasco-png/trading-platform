@@ -97,19 +97,16 @@ function ar1Residuals(phi: number, innovation: number, n: number): number[] {
   return out;
 }
 
-function makeContext(sym1: string, sym2: string, mid1: number, mid2: number): EvaluationContext {
+/** Both legs' completed bars for the current minute, closing at the given prices. */
+function makeContext(sym1: string, sym2: string, close1: number, close2: number): EvaluationContext {
   const symbolState = new SymbolStateManager();
   const isoTs = new Date(currentTs).toISOString();
-  symbolState.onQuote({
-    symbol: sym1, bidPrice: mid1 - 0.01, askPrice: mid1 + 0.01,
-    bidSize: 100, askSize: 100, midPrice: mid1, spread: 0.02,
-    microPrice: mid1, imbalance: 0, ts: currentTs, isoTs,
-  });
-  symbolState.onQuote({
-    symbol: sym2, bidPrice: mid2 - 0.01, askPrice: mid2 + 0.01,
-    bidSize: 100, askSize: 100, midPrice: mid2, spread: 0.02,
-    microPrice: mid2, imbalance: 0, ts: currentTs, isoTs,
-  });
+  for (const [symbol, close] of [[sym1, close1], [sym2, close2]] as const) {
+    symbolState.onBar({
+      symbol, open: close, high: close, low: close, close, volume: 1_000,
+      ts: currentTs, isoTs, timeframe: '1Min',
+    });
+  }
   return {
     symbol: sym1,
     symbolState,

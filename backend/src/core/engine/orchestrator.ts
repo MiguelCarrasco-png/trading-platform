@@ -30,6 +30,7 @@ import { newId } from "../../utils/ids";
 import type { IStrategy } from "../../strategies/base/strategy";
 import type { ExecutionMode, UUID } from "../../types/common";
 import type { BaseStrategyConfig } from "../../types/strategy";
+import type { MarketEventKind } from "../../types/market";
 import type {
   QuoteReceivedEvent,
   TradeReceivedEvent,
@@ -53,6 +54,8 @@ export interface OrchestratorOptions {
 
 export class Orchestrator {
   private strategies: Map<string, IStrategy> = new Map();
+  /** Registry in evaluation-priority order; rebuilt only when the registry changes. */
+  private _byPriority: [string, IStrategy][] | null = null;
   private running = false;
   private readonly capitalReservation = new CapitalReservationManager();
   /** intentId → reservationId, for releasing on any terminal order event */
@@ -85,6 +88,7 @@ export class Orchestrator {
   registerStrategy(strategy: IStrategy, runId?: string): void {
     const key = runId ?? strategy.id;
     this.strategies.set(key, strategy);
+    this._byPriority = null;
     if (runId) this._runKeys.add(runId);
 
     const cfg = strategy.config as BaseStrategyConfig;
@@ -125,6 +129,7 @@ export class Orchestrator {
     if (!strategy) return false;
     strategy.stop();
     this.strategies.delete(strategyId);
+    this._byPriority = null;
     this._runKeys.delete(strategyId);
     this._consecutiveErrors.delete(strategyId);
     this.eventBus.publish({
@@ -248,14 +253,14 @@ export class Orchestrator {
     // price moves even when no new fills occur.
     this.portfolioState.updatePrice(event.payload.symbol, event.payload.midPrice);
     this._proactivePortfolioCheck(event.mode);
-    this._evaluateStrategies(event.payload.symbol);
+    this._evaluateStrategies(event.payload.symbol, "quote");
   }
 
   private _onTrade(event: TradeReceivedEvent): void {
     this.symbolState.onTrade(event.payload);
     this.portfolioState.updatePrice(event.payload.symbol, event.payload.price);
     this._proactivePortfolioCheck(event.mode);
-    this._evaluateStrategies(event.payload.symbol);
+    this._evaluateStrategies(event.payload.symbol, "trade");
   }
 
   private _onBar(event: BarReceivedEvent): void {
@@ -264,7 +269,7 @@ export class Orchestrator {
     // after this handler returns reflects the current price.
     this.portfolioState.updatePrice(event.payload.symbol, event.payload.close);
     this._proactivePortfolioCheck(event.mode);
-    this._evaluateStrategies(event.payload.symbol);
+    this._evaluateStrategies(event.payload.symbol, "bar");
   }
 
   /**
@@ -292,11 +297,12 @@ export class Orchestrator {
     }
   }
 
-  private _evaluateStrategies(symbol: string): void {
+  private _evaluateStrategies(symbol: string, kind: MarketEventKind): void {
     if (this.riskEngine.getConfig().killSwitchActive) return;
-    const sorted = [...this.strategies.entries()]
+    this._byPriority ??= [...this.strategies.entries()]
       .sort(([, a], [, b]) => getStrategyPriority(b.type) - getStrategyPriority(a.type));
-    for (const [key, strategy] of sorted) {
+    for (const [key, strategy] of this._byPriority) {
+      if (strategy.triggers && !strategy.triggers.includes(kind)) continue;
       if (!strategy.config.symbols.includes(symbol)) continue;
       // An earlier strategy's handler in this same pass may have deregistered it.
       if (!this.strategies.has(key)) continue;

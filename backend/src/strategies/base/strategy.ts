@@ -14,7 +14,7 @@ import type { SymbolStateManager } from "../../core/state/symbolState";
 import type { PortfolioStateManager } from "../../core/state/portfolioState";
 import type { OrderStateManager } from "../../core/state/orderState";
 import type { UUID } from "../../types/common";
-import type { Bar } from "../../types/market";
+import type { Bar, MarketEventKind } from "../../types/market";
 import { nowMs } from "../../utils/time";
 import { newId } from "../../utils/ids";
 
@@ -23,7 +23,7 @@ import { newId } from "../../utils/ids";
 // ------------------------------------------------------------------
 
 /**
- * The context object passed to IStrategy.evaluate on every tick.
+ * The context object passed to IStrategy.evaluate on each evaluation.
  * Provides read-only access to all shared state.
  */
 export interface EvaluationContext {
@@ -61,6 +61,15 @@ export interface IStrategy {
   readonly version?: number;
   /** Full strategy configuration */
   readonly config: BaseStrategyConfig;
+  /**
+   * Market events that call evaluate(): the strategy's decision clock. The
+   * orchestrator skips every other kind for this strategy, live and in
+   * backtests alike, so both sample the market the same way. evaluate() can
+   * still read any state already known (a bar strategy may read the latest
+   * quote). Omit to be called on every quote, trade and bar; such a strategy
+   * must itself avoid counting one observation twice.
+   */
+  readonly triggers?: readonly MarketEventKind[];
 
   /** Called by the Orchestrator when the strategy is activated */
   start(): void;
@@ -69,7 +78,7 @@ export interface IStrategy {
   stop(): void;
 
   /**
-   * Called by the Orchestrator on every relevant market event.
+   * Called by the Orchestrator on each market event this strategy triggers on.
    * Should be fast and non-blocking.
    * @param context - Current EvaluationContext
    * @returns StrategySignal if an action should be taken, null otherwise

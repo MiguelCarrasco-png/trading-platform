@@ -10,6 +10,9 @@
 
 import type { EpochMs, Symbol, ISOTimestamp } from "./common";
 
+/** The kinds of market data event that reach symbol state and strategies. */
+export type MarketEventKind = "bar" | "quote" | "trade";
+
 // ------------------------------------------------------------------
 // Quote (top-of-book bid/ask snapshot)
 // ------------------------------------------------------------------
