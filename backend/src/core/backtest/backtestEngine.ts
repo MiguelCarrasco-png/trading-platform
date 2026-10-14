@@ -313,12 +313,16 @@ export class BacktestEngine {
             }
           }
 
-          // Quote model: limits resting through the minute these bars cover
-          // fill on the trades printed during it, before its end is processed.
+          // Quote model: orders resting through the minute these bars cover act
+          // on the trades printed during it, before its end is processed: limits
+          // fill, and stops trigger and are priced from their trigger.
           if (tickSource && simulatedSink.hasResting()) {
             for (const plan of await simulatedSink.planResting(batch, tickSource)) {
               simulatedNow = Math.max(simulatedNow, plan.ts);
               simulatedSink.applyResting(plan);
+            }
+            if (simulatedSink.hasArrivals()) {
+              await this._resolveArrivals(simulatedSink, tickSource, (ts) => { simulatedNow = Math.max(simulatedNow, ts); });
             }
           }
 

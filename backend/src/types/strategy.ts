@@ -9,7 +9,7 @@
  */
 
 import type { StrategyRunStats } from "./analytics";
-import type { UUID, EpochMs, Symbol, Metadata, ExecutionAlgoType, SizerType } from "./common";
+import type { UUID, EpochMs, Symbol, Metadata, ExecutionAlgoType, SizerType, OrderType, TimeInForce } from "./common";
 import type { StrategyRiskBudget } from "./risk";
 
 // ------------------------------------------------------------------
@@ -117,6 +117,29 @@ export interface StrategySignal {
   ts: EpochMs;
   /** Optional signal metadata (e.g. hedge symbol, ratio) */
   meta?: Metadata;
+  /**
+   * How the signal's order is sent. Absent: a market order, immediate-or-cancel.
+   * Applies to the signal's own symbol; a pair's counterpart leg stays a market order.
+   */
+  order?: SignalOrder;
+  /**
+   * Cancel this strategy's working orders on the signal's symbols (and
+   * counterpart) before sending — e.g. an exit replacing a resting protective
+   * stop, so the stop cannot fire after the position is gone. A "flat" signal
+   * with this set only cancels.
+   */
+  cancelWorkingOrders?: boolean;
+}
+
+/** Order type, prices and time in force a strategy asks for. */
+export interface SignalOrder {
+  type: OrderType;
+  /** Worst acceptable price; required for "limit" and "stop_limit". */
+  limitPrice?: number;
+  /** Trigger price; required for "stop" and "stop_limit". */
+  stopPrice?: number;
+  /** Defaults to "ioc" for market orders and "day" otherwise. */
+  timeInForce?: TimeInForce;
 }
 
 // ------------------------------------------------------------------

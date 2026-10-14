@@ -44,7 +44,11 @@ under older semantics are never reused.
 | Timing | Next bar's open | Decision time + `latencyMs` |
 | Data | Minute bars only | Historical SIP quotes and trades, a few seconds per order |
 | Limit orders | Synthetic touch check at the next open | Marketable on arrival: fill at the touch. Otherwise IOC/FOK expires and DAY/GTC rests until a trade prints *through* the price |
-| Stops | Treated as market orders (known gap) | Fall back to the bar model, flagged |
+| Stops | Work until a regular-session bar reaches the stop, then fill at the stop, or at the open if the bar gapped through it | Trigger on the first trade at or through the stop, then execute at the quote prevailing at the trigger |
+
+A stop-limit triggers like a stop and then acts as a limit. The bar model
+rejects it if its limit is not marketable at the trigger price, as it does any
+limit; the quote model rests it.
 
 Under both models, an order only fills against a bar that ends after the order
 was placed. Engine v1 could fill an order for a symbol published later in the
@@ -64,18 +68,48 @@ same batch at that symbol's same-minute open, which is before the decision.
   session. Trades are fetched only for minutes whose bar range reached through
   the limit. A resting limit fills at its limit price, up to the size printed
   through it. A print exactly at the limit is not a fill.
+- **Stops.** A stop rests from arrival until a trade prints at or through its
+  stop price, checked minute by minute like a resting limit. It then becomes a
+  market order (a stop-limit, a limit) priced from the quote prevailing at the
+  trigger, with no further latency; a stop-limit that is not marketable then
+  rests as a limit. A stop the market is already through when it arrives
+  executes at once.
 - **DAY orders.** A resting DAY order expires at the close of its regular
   session: 16:00 New York time on the day it reached the market, or the next
-  weekday's close if it arrived after the close. There is no holiday or
+  weekday's close if it arrived after the close. A bar-model DAY stop expires
+  the same way. There is no holiday or
   early-close calendar. GTC orders rest until filled, canceled, or the run ends.
 - **Fallback.** If no usable quote is found, or Alpaca refuses the data, the
   order is priced by the bar model at the next open. The fill records
-  `fallbackReason`. The free plan cannot read SIP data from the last 15
-  minutes, so a backtest ending "now" falls back for its final orders.
+  `fallbackReason`. A stop falls back to the bar model's stop handling, including
+  one that triggered on a trade but has no quote to price it. The free plan
+  cannot read SIP data from the last 15 minutes, so a backtest ending "now"
+  falls back for its final orders.
 
 The engine stays synchronous where events are published. Between timestamp
 batches it awaits the quote windows it needs (`planArrivals`, `planResting`),
 then publishes each decision at its own time.
+
+## Orders from a signal
+
+A signal sends a market IOC order unless it asks for something else:
+
+```ts
+order?: { type: "market" | "limit" | "stop" | "stop_limit"; limitPrice?: number; stopPrice?: number; timeInForce?: TimeInForce };
+cancelWorkingOrders?: boolean;
+```
+
+A missing time in force is IOC for market orders and DAY otherwise. A signal
+whose order lacks a price its type needs is dropped with a warning.
+`cancelWorkingOrders` cancels the strategy's open orders on the signal's
+symbol, and on `meta.counterpartSymbol` for a pair, before the new order goes
+out, so an exit does not leave its protective stop working. The cancel stands
+even if risk checks then reject the new order. At a broker a cancel is a
+request, and the stop can still fill first. A `flat` signal with it only
+cancels.
+
+Risk checks value a stop from the worse of the mid and its stop price, and the
+Alpaca adapter sends `stop_price`.
 
 ## Using it
 
@@ -136,5 +170,4 @@ free rate limit. A re-run took under a second.
 - Strategies triggered by quotes or trades in backtests. That needs every quote
   and trade replayed through the engine, not sparse windows: millions of events
   per liquid symbol-day.
-- Stop orders (both models).
 - The local `sim` runtime still uses the bar model on live bars.

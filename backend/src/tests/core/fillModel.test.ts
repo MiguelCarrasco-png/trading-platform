@@ -8,6 +8,8 @@
 
 import {
   evaluateFill,
+  evaluateBarFill,
+  stopTriggerPrice,
   DEFAULT_FILL_MODEL,
   pickReferencePrice,
   type FillModelConfig,
@@ -187,5 +189,42 @@ describe('FillModel.evaluateFill — invalid inputs', () => {
     const decision = evaluateFill(makeIntent(), makeBar({ open: 0 }));
     expect(decision.outcome).toBe('rejected');
     expect(decision.reason).toMatch(/reference price/i);
+  });
+});
+
+describe('FillModel stops (bar model)', () => {
+  const exact: FillModelConfig = { ...DEFAULT_FILL_MODEL, halfSpreadBps: 0, slippageBps: 0 };
+
+  it('triggers only when the bar reaches the stop, from the stop or a gapped open', () => {
+    expect(stopTriggerPrice('buy', 102, makeBar({ open: 100, high: 101 }))).toBeNull();
+    expect(stopTriggerPrice('buy', 100.5, makeBar({ open: 100, high: 101 }))).toBe(100.5);
+    expect(stopTriggerPrice('buy', 100.5, makeBar({ open: 101, high: 102 }))).toBe(101); // gapped through
+    expect(stopTriggerPrice('sell', 99.5, makeBar({ open: 100, low: 99 }))).toBe(99.5);
+    expect(stopTriggerPrice('sell', 99.5, makeBar({ open: 99, low: 98 }))).toBe(99);
+    expect(stopTriggerPrice('sell', 98, makeBar({ open: 100, low: 99 }))).toBeNull();
+  });
+
+  it('keeps an untriggered stop working and executes a triggered one like a market order', () => {
+    const stop = makeIntent({ side: 'sell', orderType: 'stop', stopPrice: 99.5, timeInForce: 'day' });
+    expect(evaluateBarFill(stop, makeBar({ low: 99.6 }), exact)).toBeNull();
+    expect(evaluateBarFill(stop, makeBar({ low: 99 }), exact)).toMatchObject({ outcome: 'filled', fillPrice: 99.5 });
+    // Spread and slippage apply from the trigger, against the order.
+    const costly = evaluateBarFill(stop, makeBar({ low: 99 }), { ...exact, halfSpreadBps: 10 });
+    expect(costly?.fillPrice).toBeCloseTo(99.5 * 0.999, 10);
+  });
+
+  it('fills a triggered stop-limit within its limit and rejects one gapped past it', () => {
+    const order = makeIntent({ side: 'buy', orderType: 'stop_limit', stopPrice: 100.5, limitPrice: 100.6, timeInForce: 'day' });
+    expect(evaluateBarFill(order, makeBar({ open: 100, high: 101 }), exact)).toMatchObject({ outcome: 'filled', fillPrice: 100.5 });
+    expect(evaluateBarFill(order, makeBar({ open: 101, high: 102 }), exact)?.outcome).toBe('rejected');
+  });
+
+  it('rejects a stop without a stop price', () => {
+    expect(evaluateBarFill(makeIntent({ orderType: 'stop' }), makeBar(), exact)?.outcome).toBe('rejected');
+  });
+
+  it('prices non-stop orders exactly as evaluateFill does', () => {
+    const market = makeIntent();
+    expect(evaluateBarFill(market, makeBar(), exact)).toEqual(evaluateFill(market, makeBar(), exact));
   });
 });

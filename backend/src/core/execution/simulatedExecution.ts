@@ -41,7 +41,8 @@ import { barEndMs, msToIso, nowMs } from "../../utils/time";
 import { newId } from "../../utils/ids";
 import {
   DEFAULT_FILL_MODEL,
-  evaluateFill,
+  evaluateBarFill,
+  stopTriggerPrice,
   type FillModelConfig,
 } from "./fillModel";
 import {
@@ -49,6 +50,8 @@ import {
   arrivalWindow,
   decideArrival,
   restingLimitFill,
+  stopTriggerTrade,
+  triggeredForm,
   type ArrivalDecision,
   type ExecutionConfig,
 } from "./quoteFillModel";
@@ -65,14 +68,21 @@ interface QueuedIntent {
   order: Order;
   /**
    * "bar": filled by processBarOpen — the bar model, or a quote-model fallback.
-   * "arrival": quote model, to be priced when it reaches the market.
-   * "resting": quote model, a limit waiting for a trade through its price.
+   *   A bar-model stop waits here until a bar reaches it.
+   * "arrival": quote model, to be priced when it reaches the market (or, for a
+   *   stop, when it triggers).
+   * "resting": quote model, a limit waiting for a trade through its price or a
+   *   stop waiting for a trade at its trigger (see restsAs).
    */
   stage: "bar" | "arrival" | "resting";
   /** Shares filled so far; a resting limit fills piecewise. */
   filledQty: number;
-  /** When a resting limit reached the market. */
+  /** When a resting order reached the market. */
   liveAt?: number;
+  /** What a resting quote-model order waits for. */
+  restsAs?: "limit" | "stop";
+  /** When a quote-model stop triggered; it is then priced as a market or limit order from here. */
+  triggeredAt?: number;
   /** When a resting DAY order expires: the close of its regular session. GTC orders have none. */
   expiresAt?: number;
   /** Quote-model context copied onto the order's fills. */
@@ -89,6 +99,20 @@ function sessionExpiry(timeInForce: TimeInForce, liveAt: number): number | undef
   return timeInForce === "gtc" ? undefined : regularSessionCloseAfter(liveAt);
 }
 
+function isStopOrder(order: Pick<Order, "orderType">): boolean {
+  return order.orderType === "stop" || order.orderType === "stop_limit";
+}
+
+/**
+ * Bar model: whether `bar` lets the order execute. Anything but a stop does; a
+ * stop only once a regular-session bar reaches its price (a stop without a
+ * price is let through so the fill model rejects it).
+ */
+function stopTriggersOn(order: Order, bar: Bar): boolean {
+  if (!isStopOrder(order) || order.stopPrice === undefined) return true;
+  return regularSessionHours.isOpen(bar.ts) && stopTriggerPrice(order.side, order.stopPrice, bar) !== null;
+}
+
 /** When a decision takes effect: its fill or expiry, its arrival when resting, the decision itself on fallback. */
 function decisionTs(decision: ArrivalDecision, submittedAt: number): number {
   if (decision.kind === "fallback") return submittedAt;
@@ -103,12 +127,10 @@ export interface ArrivalPlan {
   ts: number;
 }
 
-/** A resting limit's fill for one minute, ready to publish at `ts`. */
-export interface RestingPlan {
-  entry: QueuedIntent;
-  ts: number;
-  qty: number;
-}
+/** A resting limit's fill, or a resting stop's trigger, ready to apply at `ts`. */
+export type RestingPlan =
+  | { kind: "fill"; entry: QueuedIntent; ts: number; qty: number }
+  | { kind: "trigger"; entry: QueuedIntent; ts: number };
 
 /** A resting order reaching the end of its session, ready to publish at `ts`. */
 export interface ExpiryPlan {
@@ -125,7 +147,9 @@ export interface ExecutionReport extends ExecutionConfig {
   expiredUnmarketable: number;
   /** Resting DAY orders that reached the regular-session close unfilled. */
   expiredAtClose: number;
-  /** Minutes a resting limit could not be checked because trades were unavailable. */
+  /** Quote-model stops that triggered (on arrival or on a later trade). */
+  stopsTriggered: number;
+  /** Minutes a resting order could not be checked because trades were unavailable. */
   tradeDataUnavailable: number;
   /** Notional-weighted cost of crossing the spread on quote fills, vs the arrival mid (bps). */
   avgSpreadCostBps: number | null;
@@ -141,6 +165,7 @@ export class SimulatedExecutionSink implements IExecutionSink {
     fallbacks: {} as Record<string, number>,
     expiredUnmarketable: 0,
     expiredAtClose: 0,
+    stopsTriggered: 0,
     tradeDataUnavailable: 0,
     costNotional: 0,
     spreadCostBpsNotional: 0,
@@ -233,8 +258,13 @@ export class SimulatedExecutionSink implements IExecutionSink {
       decisionPrice: intent.decisionPrice,
     };
 
+    const stage = this.execution.model === "quote" ? "arrival" : "bar";
     const list = this.pending.get(intent.symbol) ?? [];
-    list.push({ intent, order, stage: this.execution.model === "quote" ? "arrival" : "bar", filledQty: 0 });
+    list.push({
+      intent, order, stage, filledQty: 0,
+      // A bar-model stop works from submission until it triggers or its session closes.
+      ...(stage === "bar" && isStopOrder(order) ? { expiresAt: sessionExpiry(order.timeInForce, ts) } : {}),
+    });
     this.pending.set(intent.symbol, list);
 
     this.eventBus.publish({
@@ -262,12 +292,10 @@ export class SimulatedExecutionSink implements IExecutionSink {
     const queue = this.pending.get(bar.symbol);
     if (!queue || queue.length === 0) return;
     const end = barEndMs(bar);
-    const due = queue.filter((q) => q.stage === "bar" && end > q.order.submittedAt);
+    const due = queue.filter((q) => q.stage === "bar" && end > q.order.submittedAt && stopTriggersOn(q.order, bar));
     if (due.length === 0) return;
     this.pending.set(bar.symbol, queue.filter((q) => !due.includes(q)));
-    for (const { intent, order, fallbackReason } of due) {
-      this._fillWithModel(intent, order, bar, fallbackReason);
-    }
+    for (const entry of due) this._fillWithModel(entry, bar);
   }
 
   // ------------------------------------------------------------------
@@ -294,8 +322,12 @@ export class SimulatedExecutionSink implements IExecutionSink {
     const windows = new Map<string, Promise<Quote[]>>();
     const plans: ArrivalPlan[] = [];
     for (const entry of this._entries("arrival")) {
-      const submittedAt = entry.order.submittedAt;
-      const { startMs, endMs } = arrivalWindow(submittedAt, this.execution);
+      // A triggered stop is converted at the broker: priced as its market or
+      // limit form from the trigger itself, with no further latency.
+      const triggered = entry.triggeredAt !== undefined;
+      const decidedAt = entry.triggeredAt ?? entry.order.submittedAt;
+      const cfg = triggered ? { ...this.execution, latencyMs: 0 } : this.execution;
+      const { startMs, endMs } = arrivalWindow(decidedAt, cfg);
       const key = `${entry.intent.symbol}|${startMs}|${endMs}`;
       if (!windows.has(key)) windows.set(key, source.quotes(entry.intent.symbol, startMs, endMs));
       let quotes: Quote[];
@@ -303,13 +335,13 @@ export class SimulatedExecutionSink implements IExecutionSink {
         quotes = await windows.get(key)!;
       } catch (err) {
         logger.warn("SimulatedExecutionSink: quotes unavailable — pricing the order with the bar model", {
-          symbol: entry.intent.symbol, at: msToIso(submittedAt), err: String(err),
+          symbol: entry.intent.symbol, at: msToIso(decidedAt), err: String(err),
         });
-        plans.push({ entry, decision: { kind: "fallback", reason: "quote_data_unavailable" }, ts: submittedAt });
+        plans.push({ entry, decision: { kind: "fallback", reason: "quote_data_unavailable" }, ts: decidedAt });
         continue;
       }
-      const decision = decideArrival(entry.order, submittedAt, quotes, this.execution);
-      plans.push({ entry, decision, ts: decisionTs(decision, submittedAt) });
+      const decision = decideArrival(triggered ? triggeredForm(entry.order) : entry.order, decidedAt, quotes, cfg);
+      plans.push({ entry, decision, ts: decisionTs(decision, decidedAt) });
     }
     return plans.sort((a, b) => a.ts - b.ts);
   }
@@ -321,18 +353,28 @@ export class SimulatedExecutionSink implements IExecutionSink {
     if (decision.kind === "fallback") {
       entry.stage = "bar";
       entry.fallbackReason = decision.reason;
+      // A stop left to the bar model waits for a bar to reach it, until its session closes.
+      if (isStopOrder(entry.order)) entry.expiresAt ??= sessionExpiry(entry.order.timeInForce, entry.order.submittedAt);
       this.stats.fallbacks[decision.reason] = (this.stats.fallbacks[decision.reason] ?? 0) + 1;
       return;
     }
     const attribution = {
-      arrivalBid: decision.arrival.bidPrice,
-      arrivalAsk: decision.arrival.askPrice,
+      ...(decision.arrival ? { arrivalBid: decision.arrival.bidPrice, arrivalAsk: decision.arrival.askPrice } : {}),
       ...(decision.decision ? { decisionMid: decision.decision.midPrice } : {}),
     };
+    // A stop that did not rest as a stop has triggered, on arrival or before it.
+    const triggeredNow = isStopOrder(entry.order) && entry.triggeredAt === undefined
+      && !(decision.kind === "rest" && decision.restsAs === "stop");
+    if (triggeredNow) {
+      entry.triggeredAt = decisionTs(decision, entry.order.submittedAt);
+      this.stats.stopsTriggered++;
+    }
     if (decision.kind === "rest") {
       entry.stage = "resting";
+      entry.restsAs = decision.restsAs;
       entry.liveAt = decision.liveAt;
-      entry.expiresAt = sessionExpiry(entry.order.timeInForce, decision.liveAt);
+      // A stop-limit resting as a limit after its trigger keeps its original session.
+      entry.expiresAt ??= sessionExpiry(entry.order.timeInForce, decision.liveAt);
       entry.attribution = attribution;
       return;
     }
@@ -342,16 +384,19 @@ export class SimulatedExecutionSink implements IExecutionSink {
       this.eventBus.publish({ id: newId(), type: "ORDER_EXPIRED", ts: decision.ts, mode: this.mode, orderId: entry.order.id });
       return;
     }
-    const qty = entry.order.qty;
+    const qty = entry.order.qty - entry.filledQty;
     this._recordQuoteCosts(entry.order.side, qty * decision.price, decision.price, decision.arrival, decision.decision);
     this._publishFill(entry, qty, decision.price, decision.ts, { source: "quote", ...attribution }, true);
   }
 
   /**
-   * For resting limits on the symbols of one completed minute (`bars`), plans
-   * fills from regular-session trades printing through each limit during that
-   * minute. Trades are fetched only when the bar's range reached through the
-   * limit; a minute whose trades cannot be fetched is skipped and counted.
+   * For resting orders on the symbols of one completed minute (`bars`), plans
+   * from that minute's regular-session trades the fills of limits (trades
+   * printing through their price) and the triggers of stops (a trade at or
+   * through their stop). Trades are fetched only when the bar's range reached
+   * the price; a minute whose trades cannot be fetched is skipped and counted.
+   * A triggered stop goes back to the arrival stage, to be priced from its
+   * trigger by planArrivals().
    */
   async planResting(bars: readonly Bar[], source: HistoricalTickSource): Promise<RestingPlan[]> {
     const plans: RestingPlan[] = [];
@@ -366,24 +411,33 @@ export class SimulatedExecutionSink implements IExecutionSink {
     return plans.sort((a, b) => a.ts - b.ts);
   }
 
-  /** One resting limit against one completed minute of its symbol. */
+  /** One resting limit or stop against one completed minute of its symbol. */
   private async _planRestingMinute(entry: QueuedIntent, bar: Bar, source: HistoricalTickSource): Promise<RestingPlan | null> {
-    const limit = entry.order.limitPrice!;
+    const { side } = entry.order;
+    const asStop = entry.restsAs === "stop";
+    const price = asStop ? entry.order.stopPrice! : entry.order.limitPrice!;
     const minuteEnd = barEndMs(bar);
     const liveAt = entry.liveAt ?? entry.order.submittedAt;
-    // Nothing printed through the limit this minute if the bar never got there.
-    const reached = entry.order.side === "buy" ? bar.low < limit : bar.high > limit;
+    // Nothing traded at the price this minute if the bar never got there: a
+    // stop triggers at its price, a limit fills only on prints through it.
+    const reached = asStop
+      ? (side === "buy" ? bar.high >= price : bar.low <= price)
+      : (side === "buy" ? bar.low < price : bar.high > price);
     const expired = entry.expiresAt !== undefined && bar.ts >= entry.expiresAt;
     if (liveAt >= minuteEnd || !reached || expired) return null;
 
     const fromMs = Math.max(liveAt, bar.ts);
     try {
       const trades = await source.trades(bar.symbol, fromMs, minuteEnd);
-      const fill = restingLimitFill(entry.order.side, limit, entry.order.qty - entry.filledQty, fromMs, trades);
-      return fill ? { entry, ts: fill.ts, qty: fill.qty } : null;
+      if (asStop) {
+        const trigger = stopTriggerTrade(side, price, fromMs, trades);
+        return trigger ? { kind: "trigger", entry, ts: trigger.ts } : null;
+      }
+      const fill = restingLimitFill(side, price, entry.order.qty - entry.filledQty, fromMs, trades);
+      return fill ? { kind: "fill", entry, ts: fill.ts, qty: fill.qty } : null;
     } catch (err) {
       this.stats.tradeDataUnavailable++;
-      logger.warn("SimulatedExecutionSink: trades unavailable — resting limit not checked this minute", {
+      logger.warn("SimulatedExecutionSink: trades unavailable — resting order not checked this minute", {
         symbol: bar.symbol, minute: bar.isoTs, err: String(err),
       });
       return null;
@@ -421,13 +475,23 @@ export class SimulatedExecutionSink implements IExecutionSink {
     this.eventBus.publish({ id: newId(), type: "ORDER_EXPIRED", ts, mode: this.mode, orderId: entry.order.id });
   }
 
-  /** Publishes one resting-limit fill. The caller has set the simulated clock to plan.ts. */
+  /**
+   * Applies one resting plan: publishes a limit's fill, or turns a triggered
+   * stop back into an arriving order to be priced from its trigger. The caller
+   * has set the simulated clock to plan.ts.
+   */
   applyResting(plan: RestingPlan): void {
-    const { entry, qty, ts } = plan;
+    const { entry, ts } = plan;
     if (!this._isQueued(entry) || entry.stage !== "resting") return;
-    const complete = entry.filledQty + qty >= entry.order.qty;
+    if (plan.kind === "trigger") {
+      entry.triggeredAt = ts;
+      entry.stage = "arrival";
+      this.stats.stopsTriggered++;
+      return;
+    }
+    const complete = entry.filledQty + plan.qty >= entry.order.qty;
     if (complete) this._dequeue(entry);
-    this._publishFill(entry, qty, entry.order.limitPrice!, ts, { source: "trade", ...entry.attribution }, complete);
+    this._publishFill(entry, plan.qty, entry.order.limitPrice!, ts, { source: "trade", ...entry.attribution }, complete);
   }
 
   /** How this run's orders were priced: the execution config plus counts and costs. */
@@ -439,6 +503,7 @@ export class SimulatedExecutionSink implements IExecutionSink {
       fallbacks: { ...s.fallbacks },
       expiredUnmarketable: s.expiredUnmarketable,
       expiredAtClose: s.expiredAtClose,
+      stopsTriggered: s.stopsTriggered,
       tradeDataUnavailable: s.tradeDataUnavailable,
       avgSpreadCostBps: s.costNotional > 0 ? s.spreadCostBpsNotional / s.costNotional : null,
       avgDelayCostBps: s.delayNotional > 0 ? s.delayCostBpsNotional / s.delayNotional : null,
@@ -605,8 +670,22 @@ export class SimulatedExecutionSink implements IExecutionSink {
   // ------------------------------------------------------------------
 
   /** Runs the configured fill model against a bar and emits fill/reject events. */
-  private _fillWithModel(intent: OrderIntent, order: Order, bar: Bar, fallbackReason?: string): void {
-    const decision = evaluateFill(intent, bar, this.fillModel);
+  private _fillWithModel(entry: QueuedIntent, bar: Bar): void {
+    const { intent, order, fallbackReason } = entry;
+    // A quote-model stop that triggered on a trade but had no quote to be
+    // priced against lands here too: it is priced as the bar model prices any
+    // stop, from the bar that reached it — never that bar's open, which came
+    // before the trigger.
+    const decision = evaluateBarFill(intent, bar, this.fillModel);
+    if (decision === null) {
+      // An untriggered stop: processBarOpen only passes triggered ones, but keep it working regardless.
+      this.pending.get(bar.symbol)?.push(entry);
+      return;
+    }
+    if (isStopOrder(order) && entry.triggeredAt === undefined) {
+      entry.triggeredAt = bar.ts;
+      this.stats.stopsTriggered++;
+    }
     const ts = bar.ts;
     // Under the quote model every fill says what priced it; bar-model runs stay as they were.
     const attribution: Partial<Fill> = this.execution.model === "quote"

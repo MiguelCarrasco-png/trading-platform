@@ -16,7 +16,12 @@
  *     limit fills only when a regular-session trade prints strictly through
  *     its price, at the limit, up to the size printed through it (conservative:
  *     a touch is not a fill).
- *   - No usable quote, or an order type this model does not price (stops),
+ *   - A stop rests until a regular-session trade prints at or through its
+ *     price (or triggers on arrival if the market is already through it),
+ *     then executes as a market order — a stop-limit as a limit — priced at the
+ *     quote prevailing at the trigger. The broker converts it, so no further
+ *     latency is added.
+ *   - An order with no usable quote on arrival, or missing a required price,
  *     falls back to the bar model; the fill records why.
  *
  * Inputs:  Order fields, decision time, quotes or trades, ExecutionConfig.
@@ -100,15 +105,24 @@ export interface PricedOrder {
   orderType: OrderType;
   timeInForce: TimeInForce;
   limitPrice?: number;
+  stopPrice?: number;
+}
+
+/** What a stop becomes once triggered: a market order, or a limit for a stop-limit. */
+export function triggeredForm(order: PricedOrder): PricedOrder {
+  if (order.orderType === "stop") return { ...order, orderType: "market" };
+  if (order.orderType === "stop_limit") return { ...order, orderType: "limit" };
+  return order;
 }
 
 /** Why an order fell back to the bar model. */
-export type FallbackReason = "no_quote" | "quote_data_unavailable" | "unsupported_order_type";
+export type FallbackReason = "no_quote" | "quote_data_unavailable" | "invalid_order";
 
 export type ArrivalDecision =
   | { kind: "fill"; price: number; ts: number; arrival: Quote; decision: Quote | null }
   | { kind: "expire"; ts: number; arrival: Quote; decision: Quote | null }
-  | { kind: "rest"; liveAt: number; arrival: Quote; decision: Quote | null }
+  /** Rests as a limit waiting for a trade through its price, or as a stop waiting for its trigger. */
+  | { kind: "rest"; restsAs: "limit" | "stop"; liveAt: number; arrival: Quote | null; decision: Quote | null }
   | { kind: "fallback"; reason: FallbackReason };
 
 /** The [start, end) window of quotes an order decided at `submittedAt` needs. */
@@ -147,25 +161,57 @@ export function decideArrival(
   quotes: readonly Quote[],
   cfg: ExecutionConfig,
 ): ArrivalDecision {
-  // Market orders and limits are priced here; stops (and a limit without a price) are not.
-  const limit = order.orderType === "limit" ? order.limitPrice : undefined;
-  const priced = order.orderType === "market" || (limit !== undefined && Number.isFinite(limit));
-  if (!priced) return { kind: "fallback", reason: "unsupported_order_type" };
+  if (!hasRequiredPrices(order)) return { kind: "fallback", reason: "invalid_order" };
+  const isStop = order.orderType === "stop" || order.orderType === "stop_limit";
 
   const liveAt = submittedAt + cfg.latencyMs;
   const decision = prevailingQuote(quotes, submittedAt, cfg.quoteLookbackMs);
   const arrival = prevailingQuote(quotes, liveAt, cfg.quoteLookbackMs)
     ?? quotes.find((q) => q.ts > liveAt && q.ts <= liveAt + cfg.maxQuoteWaitMs && isUsableQuote(q))
     ?? null;
-  if (!arrival) return { kind: "fallback", reason: "no_quote" };
+  // A stop needs no quote to wait for its trigger; anything else does to be priced.
+  if (!arrival) {
+    return isStop ? { kind: "rest", restsAs: "stop", liveAt, arrival: null, decision } : { kind: "fallback", reason: "no_quote" };
+  }
+  // A stop the market has not reached rests; one already through it executes now.
+  if (isStop && !stopReached(order.side, order.stopPrice!, arrival.midPrice)) {
+    return { kind: "rest", restsAs: "stop", liveAt, arrival, decision };
+  }
 
+  const priced = triggeredForm(order);
+  const limit = priced.orderType === "limit" ? priced.limitPrice : undefined;
   const ts = Math.max(liveAt, arrival.ts);
   const price = marketablePrice(order.side, arrival, limit, cfg.extraSlippageBps);
   if (price !== null) return { kind: "fill", price, ts, arrival, decision };
   if (order.timeInForce === "ioc" || order.timeInForce === "fok") {
     return { kind: "expire", ts, arrival, decision };
   }
-  return { kind: "rest", liveAt, arrival, decision };
+  return { kind: "rest", restsAs: "limit", liveAt, arrival, decision };
+}
+
+/** Limits and stop-limits need a limit price, stops and stop-limits a stop price. */
+function hasRequiredPrices(order: PricedOrder): boolean {
+  const finite = (p: number | undefined) => p !== undefined && Number.isFinite(p);
+  switch (order.orderType) {
+    case "market": return true;
+    case "limit": return finite(order.limitPrice);
+    case "stop": return finite(order.stopPrice);
+    case "stop_limit": return finite(order.stopPrice) && finite(order.limitPrice);
+    default: return false;
+  }
+}
+
+/** Whether the market has reached a stop: at or above it for a buy stop, at or below for a sell stop. */
+export function stopReached(side: OrderSide, stopPrice: number, price: number): boolean {
+  return side === "buy" ? price >= stopPrice : price <= stopPrice;
+}
+
+/**
+ * The first trade at or through a stop, at or after `fromMs`: when the stop
+ * triggers. `trades` in time order (already limited to the regular session).
+ */
+export function stopTriggerTrade(side: OrderSide, stopPrice: number, fromMs: number, trades: readonly Trade[]): Trade | null {
+  return trades.find((t) => t.ts >= fromMs && stopReached(side, stopPrice, t.price)) ?? null;
 }
 
 /**

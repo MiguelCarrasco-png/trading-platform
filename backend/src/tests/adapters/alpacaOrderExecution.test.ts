@@ -92,6 +92,14 @@ describe('AlpacaOrderExecutionAdapter: submitOrder', () => {
     expect(JSON.parse(request.body)).toMatchObject({ client_order_id: intent.id });
   });
 
+  it("sends a stop-limit's stop and limit prices", async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => alpacaOrderResponse });
+    const { adapter } = makeAdapter();
+    await adapter.submitOrder({ ...intent, orderType: 'stop_limit', stopPrice: 99.5, limitPrice: 99.4, timeInForce: 'day' });
+    const request = (global.fetch as jest.Mock).mock.calls[0][1] as { body: string };
+    expect(JSON.parse(request.body)).toMatchObject({ type: 'stop_limit', stop_price: '99.5', limit_price: '99.4', time_in_force: 'day' });
+  });
+
   it('publishes ORDER_SUBMITTED event on success', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       ok: true,

@@ -19,7 +19,7 @@ import { DEFAULT_EXECUTION } from '../../core/execution/quoteFillModel';
 import type { HistoricalTickSource } from '../../core/backtest/tickSource';
 import type { IStrategy } from '../../strategies/base/strategy';
 import type { BacktestConfig } from '../../types/backtest';
-import type { Bar, Quote } from '../../types/market';
+import type { Bar, Quote, Trade } from '../../types/market';
 import type { StrategySignal } from '../../types/strategy';
 import type { UUID } from '../../types/common';
 
@@ -60,12 +60,12 @@ function roundTrip(buyAt: number, sellAt: number): IStrategy {
 let sigs = 0;
 const newSig = () => `sig-${++sigs}` as UUID;
 
-function engineWith(bars: Bar[], quotes: Quote[]) {
+function engineWith(bars: Bar[], quotes: Quote[], trades: Trade[] = []) {
   MockLoader.mockImplementation(() => ({ streamBars: jest.fn(async function* () { yield bars; }) } as unknown as BacktestLoader));
   const source: HistoricalTickSource = {
     feed: 'sip',
     quotes: jest.fn(async (_s: string, from: number, to: number) => quotes.filter((q) => q.ts >= from && q.ts < to)),
-    trades: jest.fn(async () => []),
+    trades: jest.fn(async (_s: string, from: number, to: number) => trades.filter((t) => t.ts >= from && t.ts < to)),
   };
   return { engine: new BacktestEngine(new BacktestLoader(), { tickSource: () => source }), source };
 }
@@ -161,3 +161,67 @@ describe('BacktestEngine — quote fills', () => {
       .rejects.toThrow('Invalid execution config');
   });
 });
+
+describe('BacktestEngine — protective stops', () => {
+  const signal = (direction: StrategySignal['direction'], ts: number, extra: Partial<StrategySignal> = {}): StrategySignal => ({
+    id: newSig(), strategyId: 'rt', strategyType: 'pairs_trading', symbol: 'SPY', direction, qty: 10, ts, ...extra,
+  });
+
+  /** Long 10 SPY from the 10:01 bar, protected from 10:02 by a sell stop at 99.80; optionally exits at 10:03. */
+  function protectedLong(exitAt?: number): IStrategy {
+    return {
+      ...roundTrip(-1, -1),
+      evaluate: (ctx) => {
+        const ts = ctx.symbolState.get('SPY')?.latestBar?.ts;
+        if (ts === T0) return signal('long', T0 + MIN);
+        if (ts === T0 + MIN) return signal('close_long', T0 + 2 * MIN, { order: { type: 'stop', stopPrice: 99.8 } });
+        if (exitAt !== undefined && ts === exitAt) return signal('close_long', exitAt + MIN, { cancelWorkingOrders: true });
+        return null;
+      },
+    };
+  }
+
+  // The 10:02 minute opens at 100 and trades down to 99.70, through the stop.
+  const falling = [bar(T0, 100), bar(T0 + MIN, 100.2), { ...bar(T0 + 2 * MIN, 100), low: 99.7 }, bar(T0 + 3 * MIN, 99.6)];
+
+  it('bar model: sells at the stop once a bar reaches it', async () => {
+    const { engine } = engineWith(falling, []);
+    const result = await engine.run(config({ execution: undefined }), () => [protectedLong()]);
+    expect(result.fills!.map((f) => [f.side, f.price, f.ts])).toEqual([['buy', 100.2, T0 + MIN], ['sell', 99.8, T0 + 2 * MIN]]);
+  });
+
+  it('quote model: triggers on the first trade through the stop and sells at the bid then', async () => {
+    const quotes = [
+      quote(T0 + MIN - 400, 100.09, 100.11), // the entry
+      quote(T0 + 2 * MIN - 200, 100.0, 100.02), // the stop reaches the market above it, and rests
+      quote(T0 + 2 * MIN + 29_900, 99.77, 99.79), // prevailing at the trigger
+    ];
+    const trades = [trade(T0 + 2 * MIN + 20_000, 99.85, 100), trade(T0 + 2 * MIN + 30_000, 99.79, 100)];
+    const { engine, source } = engineWith(falling, quotes, trades);
+    const result = await engine.run(config(), () => [protectedLong()]);
+
+    expect(result.fills!.map((f) => [f.side, f.price, f.ts, f.source])).toEqual([
+      ['buy', 100.11, T0 + MIN + 250, 'quote'],
+      ['sell', 99.77, T0 + 2 * MIN + 30_000, 'quote'],
+    ]);
+    expect(result.metrics.meta!.execution).toMatchObject({ stopsTriggered: 1, fills: { quote: 2, trade: 0, bar: 0 } });
+    // Trades are fetched only for the minute whose range reached the stop, from when the stop was live.
+    expect(jest.mocked(source.trades).mock.calls).toEqual([['SPY', T0 + 2 * MIN + 250, T0 + 3 * MIN]]);
+  });
+
+  it('an exit that cancels working orders leaves no stop behind to trigger', async () => {
+    // Up to 100.60 by 10:02, then a gap down through the stop at 10:03.
+    const gap = [bar(T0, 100), bar(T0 + MIN, 100.2), bar(T0 + 2 * MIN, 100.6), bar(T0 + 3 * MIN, 99.6), bar(T0 + 4 * MIN, 99.6)];
+    const { engine } = engineWith(gap, []);
+    const result = await engine.run(config({ execution: undefined }), () => [protectedLong(T0 + 2 * MIN)]);
+
+    expect(result.fills!.map((f) => [f.side, f.price])).toEqual([['buy', 100.2], ['sell', 99.6]]);
+    expect(result.orders!.map((o) => [o.orderType, o.status])).toEqual([
+      ['market', 'filled'], ['stop', 'canceled'], ['market', 'filled'],
+    ]);
+  });
+});
+
+function trade(ts: number, price: number, size: number): Trade {
+  return { symbol: 'SPY', price, size, ts, isoTs: new Date(ts).toISOString() };
+}

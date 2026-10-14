@@ -163,6 +163,94 @@ describe('SimulatedExecutionSink — quote model', () => {
     });
   });
 
+  describe('stops', () => {
+    const sellStop = (overrides: Partial<OrderIntent> = {}) =>
+      intent({ side: 'sell', orderType: 'stop', stopPrice: 99.5, timeInForce: 'day', ...overrides });
+
+    it('bar model: work until a regular-session bar reaches them, then fill from the stop', async () => {
+      const { sink, fills } = setup(DEFAULT_EXECUTION);
+      await sink.submitOrder(sellStop());
+      sink.processBarOpen(bar(T + MIN, 99.6, 100.4)); // never reached
+      sink.processBarOpen(bar(Date.parse('2026-10-07T20:30:00Z'), 99.0, 100.0)); // after the close
+      expect(fills()).toHaveLength(0);
+      sink.processBarOpen(bar(T + 2 * MIN, 99.0, 100.2, 100)); // reaches 99.5 from a 100 open
+      expect(fills().map((f) => f.price)).toEqual([99.5]);
+    });
+
+    it('bar model: expire at the close of their session', async () => {
+      const { sink, events } = setup(DEFAULT_EXECUTION);
+      await sink.submitOrder(sellStop());
+      const plans = sink.planExpiries(Date.parse('2026-10-07T20:00:00Z'));
+      expect(plans).toHaveLength(1);
+      sink.applyExpiry(plans[0]);
+      expect(events.filter((e) => e.type === 'ORDER_EXPIRED')).toHaveLength(1);
+    });
+
+    it('quote model: rest, trigger on a trade at the stop, and fill at the quote prevailing then', async () => {
+      const { sink, fills } = setup();
+      await sink.submitOrder(sellStop());
+      const src = source(
+        [quote(T - 500, 99.99, 100.01), quote(T + MIN + 2_000, 99.48, 99.5)],
+        [trade(T + MIN + 1_000, 99.6, 10), trade(T + MIN + 3_000, 99.5, 10)],
+      );
+      await arrive(sink, src);
+      expect(sink.hasResting()).toBe(true);
+
+      for (const plan of await sink.planResting([bar(T + MIN, 99.4, 100)], src)) sink.applyResting(plan);
+      expect(sink.hasArrivals()).toBe(true);
+      await arrive(sink, src); // priced from the trigger, with no added latency
+
+      expect(fills()).toEqual([expect.objectContaining({ price: 99.48, ts: T + MIN + 3_000, source: 'quote' })]);
+      expect(sink.executionReport().stopsTriggered).toBe(1);
+    });
+
+    it('quote model: a triggered stop-limit that cannot fill rests as a limit and fills on a trade through it', async () => {
+      const { sink, fills } = setup();
+      await sink.submitOrder(sellStop({ orderType: 'stop_limit', limitPrice: 99.45 }));
+      const src = source(
+        [quote(T - 500, 99.99, 100.01), quote(T + MIN + 2_000, 99.4, 99.42)],
+        [trade(T + MIN + 3_000, 99.5, 10), trade(T + 2 * MIN + 1_000, 99.46, 50)],
+      );
+      await arrive(sink, src);
+      for (const plan of await sink.planResting([bar(T + MIN, 99.4, 100)], src)) sink.applyResting(plan);
+      await arrive(sink, src); // the bid (99.40) is below the limit: rests as a limit
+      expect(fills()).toHaveLength(0);
+      expect(sink.hasResting()).toBe(true);
+
+      for (const plan of await sink.planResting([bar(T + 2 * MIN, 99.3, 99.6)], src)) sink.applyResting(plan);
+      expect(fills()).toEqual([expect.objectContaining({ price: 99.45, qty: 10, source: 'trade' })]);
+    });
+
+    it('quote model: a stop triggered with no quote to price it fills from the stop, not the open before its trigger', async () => {
+      const { sink, fills } = setup();
+      await sink.submitOrder(sellStop());
+      const src = source([quote(T - 500, 99.99, 100.01)], [trade(T + MIN + 30_000, 99.5, 10)]);
+      await arrive(sink, src);
+      const minute = bar(T + MIN, 99.4, 100.2, 100);
+      for (const plan of await sink.planResting([minute], src)) sink.applyResting(plan);
+      await arrive(sink, src); // no quote within the lookback of 10:01:30
+      sink.processBarOpen(minute);
+
+      expect(fills()).toEqual([expect.objectContaining({ price: 99.5, source: 'bar', fallbackReason: 'no_quote' })]);
+      expect(sink.executionReport().stopsTriggered).toBe(1);
+    });
+
+    it('quote model: a stop whose quotes cannot be fetched works under the bar model until its session closes', async () => {
+      const { sink, fills, events } = setup();
+      await sink.submitOrder(sellStop());
+      const down: HistoricalTickSource = {
+        feed: 'sip', quotes: jest.fn(async () => { throw new Error('503'); }), trades: jest.fn(async () => []),
+      };
+      await arrive(sink, down);
+      expect(sink.executionReport().fallbacks).toEqual({ quote_data_unavailable: 1 });
+
+      sink.processBarOpen(bar(T + MIN, 99.6, 100.4)); // never reached
+      expect(fills()).toHaveLength(0);
+      for (const plan of sink.planExpiries(Date.parse('2026-10-07T20:00:00Z'))) sink.applyExpiry(plan);
+      expect(events.filter((e) => e.type === 'ORDER_EXPIRED')).toHaveLength(1);
+    });
+  });
+
   it('reports notional-weighted spread and delay costs against the order', async () => {
     const { sink } = setup();
     await sink.submitOrder(intent({ side: 'buy' }));

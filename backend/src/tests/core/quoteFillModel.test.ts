@@ -6,6 +6,8 @@ import {
   prevailingQuote,
   resolveExecution,
   restingLimitFill,
+  stopTriggerTrade,
+  triggeredForm,
   validateExecution,
   type ExecutionConfig,
   type PricedOrder,
@@ -114,9 +116,42 @@ describe('decideArrival', () => {
     expect(day).toMatchObject({ kind: 'rest', liveAt: T + 250 });
   });
 
-  it('leaves stops to the bar model', () => {
-    const stop = decideArrival({ side: 'sell', orderType: 'stop', timeInForce: 'day' }, T, book, CFG);
-    expect(stop).toEqual({ kind: 'fallback', reason: 'unsupported_order_type' });
+  it('rests a stop the market has not reached, with or without a quote', () => {
+    const sellStop: PricedOrder = { side: 'sell', orderType: 'stop', stopPrice: 99.5, timeInForce: 'day' };
+    expect(decideArrival(sellStop, T, book, CFG)).toMatchObject({ kind: 'rest', restsAs: 'stop', liveAt: T + 250 });
+    expect(decideArrival(sellStop, T, [], CFG)).toMatchObject({ kind: 'rest', restsAs: 'stop', arrival: null });
+  });
+
+  it('executes a stop the market is already through on arrival, at the touch', () => {
+    const buyStop: PricedOrder = { side: 'buy', orderType: 'stop', stopPrice: 100.02, timeInForce: 'day' };
+    expect(decideArrival(buyStop, T, book, CFG)).toMatchObject({ kind: 'fill', price: 100.06, ts: T + 250 });
+  });
+
+  it('rests a stop-limit triggered on arrival as a limit when its limit is not marketable', () => {
+    const order: PricedOrder = { side: 'buy', orderType: 'stop_limit', stopPrice: 100.02, limitPrice: 100.03, timeInForce: 'day' };
+    expect(decideArrival(order, T, book, CFG)).toMatchObject({ kind: 'rest', restsAs: 'limit' });
+  });
+
+  it('falls back for an order missing a price it needs', () => {
+    expect(decideArrival({ side: 'buy', orderType: 'stop', timeInForce: 'day' }, T, book, CFG))
+      .toEqual({ kind: 'fallback', reason: 'invalid_order' });
+    expect(decideArrival({ side: 'buy', orderType: 'stop_limit', stopPrice: 101, timeInForce: 'day' }, T, book, CFG))
+      .toEqual({ kind: 'fallback', reason: 'invalid_order' });
+  });
+});
+
+describe('stops', () => {
+  it('trigger on the first trade at or through the stop, not before it is live', () => {
+    const trades = [trade(T + 100, 101, 5), trade(T + 900, 100.99, 5), trade(T + 1_000, 101, 5)];
+    expect(stopTriggerTrade('buy', 101, T + 500, trades)?.ts).toBe(T + 1_000);
+    expect(stopTriggerTrade('sell', 101, T + 500, trades)?.ts).toBe(T + 900);
+    expect(stopTriggerTrade('buy', 102, T, trades)).toBeNull();
+  });
+
+  it('become market orders, or limits for stop-limits, once triggered', () => {
+    expect(triggeredForm({ side: 'sell', orderType: 'stop', stopPrice: 99, timeInForce: 'day' }).orderType).toBe('market');
+    expect(triggeredForm({ side: 'sell', orderType: 'stop_limit', stopPrice: 99, limitPrice: 98.9, timeInForce: 'day' }))
+      .toMatchObject({ orderType: 'limit', limitPrice: 98.9 });
   });
 });
 

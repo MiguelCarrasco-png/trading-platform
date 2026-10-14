@@ -30,7 +30,8 @@ import { newId } from "../../utils/ids";
 import type { IStrategy } from "../../strategies/base/strategy";
 import type { EngineProbe } from "../telemetry/latencyProbe";
 import type { ExecutionMode, UUID } from "../../types/common";
-import type { BaseStrategyConfig } from "../../types/strategy";
+import type { BaseStrategyConfig, SignalOrder, StrategySignal } from "../../types/strategy";
+import type { OrderIntent } from "../../types/orders";
 import type { MarketEventKind } from "../../types/market";
 import type {
   QuoteReceivedEvent,
@@ -58,6 +59,30 @@ export interface OrchestratorOptions {
    * are timed and correlated with the market event's trace.
    */
   probe?: EngineProbe;
+}
+
+const ORDER_TYPES = new Set<SignalOrder["type"]>(["market", "limit", "stop", "stop_limit"]);
+
+/**
+ * Order fields for a signal's own leg: market, immediate-or-cancel, unless the
+ * signal asks otherwise. Null when the request is unusable — an unknown type,
+ * or a limit/stop price that is missing or not a positive number.
+ */
+function primaryOrderFields(
+  order: SignalOrder | undefined,
+): Pick<OrderIntent, "orderType" | "limitPrice" | "stopPrice" | "timeInForce"> | null {
+  if (!order) return { orderType: "market", timeInForce: "ioc" };
+  const usable = (price: number | undefined) => price !== undefined && Number.isFinite(price) && price > 0;
+  const hasLimit = order.type === "limit" || order.type === "stop_limit";
+  const hasStop = order.type === "stop" || order.type === "stop_limit";
+  if (!ORDER_TYPES.has(order.type)) return null;
+  if ((hasLimit && !usable(order.limitPrice)) || (hasStop && !usable(order.stopPrice))) return null;
+  return {
+    orderType: order.type,
+    ...(hasLimit ? { limitPrice: order.limitPrice } : {}),
+    ...(hasStop ? { stopPrice: order.stopPrice } : {}),
+    timeInForce: order.timeInForce ?? (order.type === "market" ? "ioc" : "day"),
+  };
 }
 
 export class Orchestrator {
@@ -413,6 +438,7 @@ export class Orchestrator {
     };
 
     const trace: EventTrace | undefined = event.trace;
+    if (signal.cancelWorkingOrders) this._cancelWorkingOrders(signal, origin.runId);
     if (signal.meta?.kind === "maker_quotes") {
       this._onMakerQuoteSignal(signal, event.mode, origin, trace);
       return;
@@ -488,9 +514,17 @@ export class Orchestrator {
     else if (signal.direction === "short" || signal.direction === "close_long") side = "sell";
     else return [];
 
+    const orderFields = primaryOrderFields(signal.order);
+    if (!orderFields) {
+      logger.warn("Orchestrator: dropping signal — its order request is incomplete or unknown", {
+        strategyId: signal.strategyId, symbol: signal.symbol, order: signal.order,
+      });
+      return [];
+    }
+
     const primary: import("../../types/orders").OrderIntent = {
       id: newId(), strategyId: signal.strategyId, symbol: signal.symbol,
-      side, qty: signal.qty, orderType: "market", timeInForce: "ioc",
+      side, qty: signal.qty, ...orderFields,
       reason: signal.triggerLabel, ts: nowMs(), meta: signal.meta,
     };
 
@@ -521,6 +555,24 @@ export class Orchestrator {
     }
 
     return legs;
+  }
+
+  /**
+   * Cancels the emitting strategy's open orders on the signal's symbol and its
+   * counterpart (only the emitting run's, when the signal came from a run).
+   * Simulated cancels take effect at once; at a broker a cancel is a request
+   * and a fill can still win the race.
+   */
+  private _cancelWorkingOrders(signal: StrategySignal, runId?: UUID): void {
+    const symbols = new Set<string>([signal.symbol]);
+    const counterpart = signal.meta?.counterpartSymbol;
+    if (typeof counterpart === "string") symbols.add(counterpart);
+    for (const order of this.orderState.getOpenOrdersByStrategy(signal.strategyId)) {
+      if (!symbols.has(order.symbol) || !order.brokerOrderId) continue;
+      if (runId && order.runId !== runId) continue;
+      this.executionEngine.cancel(order.brokerOrderId).catch((err) =>
+        logger.error("Orchestrator: canceling a working order failed", { orderId: order.id, error: String(err) }));
+    }
   }
 
   /**
