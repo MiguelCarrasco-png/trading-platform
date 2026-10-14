@@ -1,4 +1,4 @@
-import { AlpacaClockHours, regularSessionHours, alwaysOpen, type MarketHours } from '../../core/market/marketHours';
+import { AlpacaClockHours, regularSessionHours, regularSessionCloseAfter, alwaysOpen, type MarketHours } from '../../core/market/marketHours';
 
 jest.mock('../../utils/logger', () => ({ logger: { warn: jest.fn(), info: jest.fn(), error: jest.fn(), debug: jest.fn() } }));
 
@@ -24,6 +24,27 @@ describe('regularSessionHours', () => {
 
   it('alwaysOpen is open at any time', () => {
     expect(alwaysOpen.isOpen(at('2026-10-10T03:00:00Z'))).toBe(true);
+  });
+});
+
+describe('regularSessionCloseAfter', () => {
+  const iso = (ts: number) => new Date(ts).toISOString();
+
+  it('is 16:00 New York time the same day during or before the session', () => {
+    expect(iso(regularSessionCloseAfter(at('2026-10-07T14:00:00Z')))).toBe('2026-10-07T20:00:00.000Z'); // 10:00 EDT
+    expect(iso(regularSessionCloseAfter(at('2026-10-07T11:00:00Z')))).toBe('2026-10-07T20:00:00.000Z'); // 07:00 EDT
+    expect(iso(regularSessionCloseAfter(at('2026-12-02T15:00:00Z')))).toBe('2026-12-02T21:00:00.000Z'); // 10:00 EST
+  });
+
+  it('moves to the next weekday from the close onwards and over weekends', () => {
+    expect(iso(regularSessionCloseAfter(at('2026-10-07T20:00:00Z')))).toBe('2026-10-08T20:00:00.000Z'); // at the close
+    expect(iso(regularSessionCloseAfter(at('2026-10-09T21:00:00Z')))).toBe('2026-10-12T20:00:00.000Z'); // Friday evening
+    expect(iso(regularSessionCloseAfter(at('2026-10-10T15:00:00Z')))).toBe('2026-10-12T20:00:00.000Z'); // Saturday
+  });
+
+  it('lands on the right hour across the switch from daylight to standard time', () => {
+    // Friday 30 Oct is EDT; clocks fall back on Sunday 1 Nov, so Monday closes at 21:00 UTC.
+    expect(iso(regularSessionCloseAfter(at('2026-10-30T21:30:00Z')))).toBe('2026-11-02T21:00:00.000Z');
   });
 });
 

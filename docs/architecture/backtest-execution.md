@@ -64,8 +64,10 @@ same batch at that symbol's same-minute open, which is before the decision.
   session. Trades are fetched only for minutes whose bar range reached through
   the limit. A resting limit fills at its limit price, up to the size printed
   through it. A print exactly at the limit is not a fill.
-- **DAY orders.** As in the bar model, DAY orders are not expired at the close.
-  They rest until filled, canceled, or the run ends.
+- **DAY orders.** A resting DAY order expires at the close of its regular
+  session: 16:00 New York time on the day it reached the market, or the next
+  weekday's close if it arrived after the close. There is no holiday or
+  early-close calendar. GTC orders rest until filled, canceled, or the run ends.
 - **Fallback.** If no usable quote is found, or Alpaca refuses the data, the
   order is priced by the bar model at the next open. The fill records
   `fallbackReason`. The free plan cannot read SIP data from the last 15
@@ -134,5 +136,5 @@ free rate limit. A re-run took under a second.
 - Strategies triggered by quotes or trades in backtests. That needs every quote
   and trade replayed through the engine, not sparse windows: millions of events
   per liquid symbol-day.
-- Stop orders (both models) and DAY expiry at the close.
+- Stop orders (both models).
 - The local `sim` runtime still uses the bar model on live bars.

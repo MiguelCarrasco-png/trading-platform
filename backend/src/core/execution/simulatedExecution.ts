@@ -25,8 +25,8 @@
  *     applies each plan in time order, setting the simulated clock to it.
  *   - Resting limits fill on regular-session trades printing through their
  *     price, checked minute by minute and fetched only for minutes whose bar
- *     reached the limit. Like bar-model orders, DAY limits are not expired at
- *     the close; they rest until filled, canceled, or the run ends.
+ *     reached the limit. A DAY order expires at its regular session's close
+ *     (planExpiries); GTC orders rest until filled, canceled, or the run ends.
  *   - An order the quote model cannot price falls back to the bar model; its
  *     fill records why. Every fill records what priced it (Fill.source).
  *
@@ -54,10 +54,10 @@ import {
 } from "./quoteFillModel";
 import type { IExecutionSink } from "./IExecutionSink";
 import { buildClientOrderId } from "../ledger/clientOrderId";
-import { regularSessionHours } from "../market/marketHours";
+import { regularSessionCloseAfter, regularSessionHours } from "../market/marketHours";
 import type { HistoricalTickSource } from "../backtest/tickSource";
 import type { OrderIntent, Order, Fill } from "../../types/orders";
-import type { ExecutionMode, Symbol } from "../../types/common";
+import type { ExecutionMode, Symbol, TimeInForce } from "../../types/common";
 import type { Bar, Quote } from "../../types/market";
 
 interface QueuedIntent {
@@ -73,10 +73,20 @@ interface QueuedIntent {
   filledQty: number;
   /** When a resting limit reached the market. */
   liveAt?: number;
+  /** When a resting DAY order expires: the close of its regular session. GTC orders have none. */
+  expiresAt?: number;
   /** Quote-model context copied onto the order's fills. */
   attribution?: Pick<Fill, "arrivalBid" | "arrivalAsk" | "decisionMid">;
   /** Why a quote-model order is being priced by the bar model. */
   fallbackReason?: string;
+}
+
+/**
+ * When a resting order placed live at `liveAt` expires: GTC never (within a
+ * run); DAY — and anything else that rests — at the close of its regular session.
+ */
+function sessionExpiry(timeInForce: TimeInForce, liveAt: number): number | undefined {
+  return timeInForce === "gtc" ? undefined : regularSessionCloseAfter(liveAt);
 }
 
 /** When a decision takes effect: its fill or expiry, its arrival when resting, the decision itself on fallback. */
@@ -100,6 +110,12 @@ export interface RestingPlan {
   qty: number;
 }
 
+/** A resting order reaching the end of its session, ready to publish at `ts`. */
+export interface ExpiryPlan {
+  entry: QueuedIntent;
+  ts: number;
+}
+
 /** Counts and costs describing how a run's orders were priced. */
 export interface ExecutionReport extends ExecutionConfig {
   fills: { quote: number; trade: number; bar: number };
@@ -107,6 +123,8 @@ export interface ExecutionReport extends ExecutionConfig {
   fallbacks: Record<string, number>;
   /** IOC/FOK limits that were not marketable on arrival. */
   expiredUnmarketable: number;
+  /** Resting DAY orders that reached the regular-session close unfilled. */
+  expiredAtClose: number;
   /** Minutes a resting limit could not be checked because trades were unavailable. */
   tradeDataUnavailable: number;
   /** Notional-weighted cost of crossing the spread on quote fills, vs the arrival mid (bps). */
@@ -122,6 +140,7 @@ export class SimulatedExecutionSink implements IExecutionSink {
     fills: { quote: 0, trade: 0, bar: 0 },
     fallbacks: {} as Record<string, number>,
     expiredUnmarketable: 0,
+    expiredAtClose: 0,
     tradeDataUnavailable: 0,
     costNotional: 0,
     spreadCostBpsNotional: 0,
@@ -313,6 +332,7 @@ export class SimulatedExecutionSink implements IExecutionSink {
     if (decision.kind === "rest") {
       entry.stage = "resting";
       entry.liveAt = decision.liveAt;
+      entry.expiresAt = sessionExpiry(entry.order.timeInForce, decision.liveAt);
       entry.attribution = attribution;
       return;
     }
@@ -353,7 +373,8 @@ export class SimulatedExecutionSink implements IExecutionSink {
     const liveAt = entry.liveAt ?? entry.order.submittedAt;
     // Nothing printed through the limit this minute if the bar never got there.
     const reached = entry.order.side === "buy" ? bar.low < limit : bar.high > limit;
-    if (liveAt >= minuteEnd || !reached) return null;
+    const expired = entry.expiresAt !== undefined && bar.ts >= entry.expiresAt;
+    if (liveAt >= minuteEnd || !reached || expired) return null;
 
     const fromMs = Math.max(liveAt, bar.ts);
     try {
@@ -367,6 +388,37 @@ export class SimulatedExecutionSink implements IExecutionSink {
       });
       return null;
     }
+  }
+
+  /** True when some queued order expires at a session close. */
+  hasExpiring(): boolean {
+    for (const queue of this.pending.values()) {
+      if (queue.some((q) => q.expiresAt !== undefined)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Queued orders whose session closed at or before `nowMs`, in the order they
+   * expired. Apply each with applyExpiry() at its own ts.
+   */
+  planExpiries(nowMs: number): ExpiryPlan[] {
+    const plans: ExpiryPlan[] = [];
+    for (const queue of this.pending.values()) {
+      for (const entry of queue) {
+        if (entry.expiresAt !== undefined && entry.expiresAt <= nowMs) plans.push({ entry, ts: entry.expiresAt });
+      }
+    }
+    return plans.sort((a, b) => a.ts - b.ts);
+  }
+
+  /** Publishes one expiry. The caller has set the simulated clock to plan.ts. */
+  applyExpiry(plan: ExpiryPlan): void {
+    const { entry, ts } = plan;
+    if (!this._isQueued(entry)) return;
+    this._dequeue(entry);
+    this.stats.expiredAtClose++;
+    this.eventBus.publish({ id: newId(), type: "ORDER_EXPIRED", ts, mode: this.mode, orderId: entry.order.id });
   }
 
   /** Publishes one resting-limit fill. The caller has set the simulated clock to plan.ts. */
@@ -386,6 +438,7 @@ export class SimulatedExecutionSink implements IExecutionSink {
       fills: { ...s.fills },
       fallbacks: { ...s.fallbacks },
       expiredUnmarketable: s.expiredUnmarketable,
+      expiredAtClose: s.expiredAtClose,
       tradeDataUnavailable: s.tradeDataUnavailable,
       avgSpreadCostBps: s.costNotional > 0 ? s.spreadCostBpsNotional / s.costNotional : null,
       avgDelayCostBps: s.delayNotional > 0 ? s.delayCostBpsNotional / s.delayNotional : null,

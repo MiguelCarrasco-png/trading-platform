@@ -305,6 +305,14 @@ export class BacktestEngine {
         if (currentBatch.length > 0) batches.push(currentBatch);
 
         for (const batch of batches) {
+          // Orders whose regular session closed before this minute began expire first.
+          if (simulatedSink.hasExpiring()) {
+            for (const plan of simulatedSink.planExpiries(batch[0].ts)) {
+              simulatedNow = Math.max(simulatedNow, plan.ts);
+              simulatedSink.applyExpiry(plan);
+            }
+          }
+
           // Quote model: limits resting through the minute these bars cover
           // fill on the trades printed during it, before its end is processed.
           if (tickSource && simulatedSink.hasResting()) {

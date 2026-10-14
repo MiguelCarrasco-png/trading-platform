@@ -122,6 +122,28 @@ describe('BacktestEngine — quote fills', () => {
     expect(result.fills!.map((f) => [f.price, f.ts])).toEqual([[100.71, T0 + 4 * MIN + 250]]);
   });
 
+  it('expires a resting DAY limit at the close of its session', async () => {
+    const close = Date.parse('2026-10-07T20:00:00Z'); // 16:00 EDT
+    const day = [bar(T0, 100), bar(T0 + MIN, 100), bar(close, 100)];
+    const passiveBid: IStrategy = {
+      ...roundTrip(-1, -1),
+      evaluate: (ctx) => (ctx.symbolState.get('SPY')?.latestBar?.ts === T0
+        ? {
+          id: newSig(), strategyId: 'rt', strategyType: 'pairs_trading', symbol: 'SPY', direction: 'flat', qty: 0, ts: T0,
+          meta: { kind: 'maker_quotes', makerQuotes: [{ side: 'buy', price: 99, qty: 10 }], timeInForce: 'day' },
+        }
+        : null),
+    };
+    const { engine, source } = engineWith(day, [quote(T0 + MIN - 400, 99.99, 100.01)]);
+    const result = await engine.run(config({ endDate: new Date(close + MIN).toISOString() }), () => [passiveBid]);
+
+    expect(result.fills).toHaveLength(0);
+    expect(result.orders!.map((o) => o.status)).toEqual(['canceled']);
+    expect((result.metrics.meta!.execution as { expiredAtClose: number }).expiredAtClose).toBe(1);
+    // The bars never reached 99, so no trades were fetched for the resting bid.
+    expect(source.trades).not.toHaveBeenCalled();
+  });
+
   it('keeps the bar model when no execution model is asked for', async () => {
     const { engine, source } = engineWith(bars, []);
     const result = await engine.run(config({ execution: undefined }), () => [roundTrip(T0, T0 + 2 * MIN)]);

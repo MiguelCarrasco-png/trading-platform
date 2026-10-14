@@ -135,6 +135,23 @@ describe('SimulatedExecutionSink — quote model', () => {
       expect(src.trades).not.toHaveBeenCalled();
     });
 
+    it('expire at the close of their regular session unless GTC', async () => {
+      const { sink, events } = setup();
+      await sink.submitOrder(restingBuy());
+      await sink.submitOrder(intent({ orderType: 'limit', limitPrice: 100.0, timeInForce: 'gtc' }));
+      await arrive(sink, source([quote(T - 500, 100.01, 100.03)]));
+
+      const close = Date.parse('2026-10-07T20:00:00Z'); // 16:00 EDT
+      expect(sink.planExpiries(close - 1)).toEqual([]);
+      const plans = sink.planExpiries(close);
+      expect(plans.map((p) => p.ts)).toEqual([close]);
+      for (const plan of plans) sink.applyExpiry(plan);
+
+      expect(events.filter((e) => e.type === 'ORDER_EXPIRED')).toHaveLength(1);
+      expect(sink.executionReport().expiredAtClose).toBe(1);
+      expect(sink.hasResting()).toBe(true); // the GTC limit is still working
+    });
+
     it('stop when canceled', async () => {
       const { sink, fills } = setup();
       const order = await sink.submitOrder(restingBuy());
