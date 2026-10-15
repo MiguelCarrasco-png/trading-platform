@@ -165,9 +165,31 @@ Cost: about one request per order on the first run, then nothing. In one
 measurement, 186 orders over two SPY/QQQ sessions took about 60 s to fetch at the
 free rate limit. A re-run took under a second.
 
+## The sim runtime
+
+A sim runtime streaming live data (`EXECUTION_TARGET=sim` with data keys) fills
+orders with the same quote model, applied as quotes and trades arrive
+(`core/execution/liveQuoteFills.ts`):
+
+- An order reaches the market `SIM_LATENCY_MS` (default 250) after the decision
+  and trades against the live quote prevailing then, or the first quote within
+  the wait. A trade through a resting limit fills it, a trade at or through a
+  stop triggers it, and DAY orders expire at the close.
+- Ticks reach the process a little after their timestamps, so an order is
+  priced 250 ms after the moment its price depends on. Fills carry that
+  moment's time, not the time they were published.
+- Quotes come from the stream's feed. On the IEX stream (the default URL) they
+  are IEX's own book, often wider than the national best, so fills come out
+  worse than they would at the broker.
+- An order with no quote in time falls back to the bar model and fills at the
+  open of the bar in progress, which can predate a decision made mid-minute.
+
+Fill counts and costs are logged when the runtime stops.
+`SIM_EXECUTION_MODEL=bar` restores next-bar fills. A keyless sim replays bars
+only, so it always uses the bar model.
+
 ## Not covered yet
 
 - Strategies triggered by quotes or trades in backtests. That needs every quote
   and trade replayed through the engine, not sparse windows: millions of events
   per liquid symbol-day.
-- The local `sim` runtime still uses the bar model on live bars.

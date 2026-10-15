@@ -55,6 +55,16 @@ function marketDataInvalidPolicy(): "pass" | "quarantine" {
   throw new Error(`MARKET_DATA_INVALID_POLICY must be pass or quarantine, got: "${raw}"`);
 }
 
+/**
+ * How a sim runtime streaming live data prices orders: "quote" against the
+ * live quotes and trades (the backtest's quote model), "bar" on the next bar.
+ */
+function simExecutionModel(): "quote" | "bar" {
+  const raw = optional("SIM_EXECUTION_MODEL", "quote");
+  if (raw === "quote" || raw === "bar") return raw;
+  throw new Error(`SIM_EXECUTION_MODEL must be quote or bar, got: "${raw}"`);
+}
+
 function executionTarget(): ExecutionTarget {
   const raw = optional("EXECUTION_TARGET", "sim");
   if (raw === "sim" || raw === "alpaca-paper" || raw === "alpaca-live") return raw;
@@ -143,6 +153,12 @@ export const env = {
   replayFrom: optional("REPLAY_FROM", ""),
   replayTo: optional("REPLAY_TO", ""),
   replaySpeed: optionalNumber("REPLAY_SPEED", 1),
+
+  // Sim fills. With live data a sim runtime prices orders on the stream's
+  // quotes and trades, assuming SIM_LATENCY_MS from decision to market; a
+  // replay has bars only and fills on the next bar.
+  simExecutionModel: simExecutionModel(),
+  simLatencyMs: optionalNumber("SIM_LATENCY_MS", 250),
 
   // Latency instrumentation of a trading runtime (docs/guides/latency-benchmark.md).
   // Off by default; when on it only observes — no trading decision changes.

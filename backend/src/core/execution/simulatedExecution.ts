@@ -61,7 +61,7 @@ import { regularSessionCloseAfter, regularSessionHours } from "../market/marketH
 import type { HistoricalTickSource } from "../backtest/tickSource";
 import type { OrderIntent, Order, Fill } from "../../types/orders";
 import type { ExecutionMode, Symbol, TimeInForce } from "../../types/common";
-import type { Bar, Quote } from "../../types/market";
+import type { Bar, Quote, Trade } from "../../types/market";
 
 interface QueuedIntent {
   intent: OrderIntent;
@@ -317,8 +317,12 @@ export class SimulatedExecutionSink implements IExecutionSink {
    * needs, without publishing anything. Apply the plans in order with
    * applyArrival(), setting the simulated clock to each plan's ts first.
    * A failed quote fetch makes that order fall back to the bar model.
+   *
+   * Live, pass `settledAt`, the time through which `source` holds every tick:
+   * only orders whose pricing that time settles are planned — they have
+   * reached the market, and a quote priced them or the wait for one is over.
    */
-  async planArrivals(source: HistoricalTickSource): Promise<ArrivalPlan[]> {
+  async planArrivals(source: HistoricalTickSource, settledAt?: number): Promise<ArrivalPlan[]> {
     const windows = new Map<string, Promise<Quote[]>>();
     const plans: ArrivalPlan[] = [];
     for (const entry of this._entries("arrival")) {
@@ -327,6 +331,8 @@ export class SimulatedExecutionSink implements IExecutionSink {
       const triggered = entry.triggeredAt !== undefined;
       const decidedAt = entry.triggeredAt ?? entry.order.submittedAt;
       const cfg = triggered ? { ...this.execution, latencyMs: 0 } : this.execution;
+      const arrivesAt = decidedAt + cfg.latencyMs;
+      if (settledAt !== undefined && settledAt < arrivesAt) continue;
       const { startMs, endMs } = arrivalWindow(decidedAt, cfg);
       const key = `${entry.intent.symbol}|${startMs}|${endMs}`;
       if (!windows.has(key)) windows.set(key, source.quotes(entry.intent.symbol, startMs, endMs));
@@ -341,6 +347,9 @@ export class SimulatedExecutionSink implements IExecutionSink {
         continue;
       }
       const decision = decideArrival(triggered ? triggeredForm(entry.order) : entry.order, decidedAt, quotes, cfg);
+      const stillWaiting = decision.kind === "fallback" && decision.reason === "no_quote"
+        && settledAt !== undefined && settledAt < arrivesAt + cfg.maxQuoteWaitMs;
+      if (stillWaiting) continue; // a quote may yet come within the wait
       plans.push({ entry, decision, ts: decisionTs(decision, decidedAt) });
     }
     return plans.sort((a, b) => a.ts - b.ts);
@@ -349,7 +358,8 @@ export class SimulatedExecutionSink implements IExecutionSink {
   /** Publishes one arrival plan. The caller has set the simulated clock to plan.ts. */
   applyArrival(plan: ArrivalPlan): void {
     const { entry, decision } = plan;
-    if (!this._isQueued(entry)) return; // canceled since it was planned
+    // Canceled, or already applied, since it was planned.
+    if (!this._isQueued(entry) || entry.stage !== "arrival") return;
     if (decision.kind === "fallback") {
       entry.stage = "bar";
       entry.fallbackReason = decision.reason;
@@ -428,13 +438,7 @@ export class SimulatedExecutionSink implements IExecutionSink {
 
     const fromMs = Math.max(liveAt, bar.ts);
     try {
-      const trades = await source.trades(bar.symbol, fromMs, minuteEnd);
-      if (asStop) {
-        const trigger = stopTriggerTrade(side, price, fromMs, trades);
-        return trigger ? { kind: "trigger", entry, ts: trigger.ts } : null;
-      }
-      const fill = restingLimitFill(side, price, entry.order.qty - entry.filledQty, fromMs, trades);
-      return fill ? { kind: "fill", entry, ts: fill.ts, qty: fill.qty } : null;
+      return this._restingPlan(entry, fromMs, await source.trades(bar.symbol, fromMs, minuteEnd));
     } catch (err) {
       this.stats.tradeDataUnavailable++;
       logger.warn("SimulatedExecutionSink: trades unavailable — resting order not checked this minute", {
@@ -442,6 +446,35 @@ export class SimulatedExecutionSink implements IExecutionSink {
       });
       return null;
     }
+  }
+
+  /**
+   * Live: what one trade does to the orders resting on its symbol — fills the
+   * limits it printed through and triggers the stops it reached. Only
+   * regular-session trades count, as in a backtest. Apply each plan with
+   * applyResting().
+   */
+  planRestingTrade(trade: Trade): RestingPlan[] {
+    const resting = (this.pending.get(trade.symbol) ?? []).filter((q) => q.stage === "resting"
+      && (q.expiresAt === undefined || trade.ts < q.expiresAt));
+    if (resting.length === 0 || !regularSessionHours.isOpen(trade.ts)) return [];
+    const plans: RestingPlan[] = [];
+    for (const entry of resting) {
+      const plan = this._restingPlan(entry, entry.liveAt ?? entry.order.submittedAt, [trade]);
+      if (plan) plans.push(plan);
+    }
+    return plans;
+  }
+
+  /** A resting limit's fill, or a resting stop's trigger, from the trades printed since `fromMs`. */
+  private _restingPlan(entry: QueuedIntent, fromMs: number, trades: readonly Trade[]): RestingPlan | null {
+    const { side } = entry.order;
+    if (entry.restsAs === "stop") {
+      const trigger = stopTriggerTrade(side, entry.order.stopPrice!, fromMs, trades);
+      return trigger ? { kind: "trigger", entry, ts: trigger.ts } : null;
+    }
+    const fill = restingLimitFill(side, entry.order.limitPrice!, entry.order.qty - entry.filledQty, fromMs, trades);
+    return fill ? { kind: "fill", entry, ts: fill.ts, qty: fill.qty } : null;
   }
 
   /** True when some queued order expires at a session close. */

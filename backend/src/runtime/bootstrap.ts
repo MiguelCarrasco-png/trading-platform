@@ -47,6 +47,8 @@ import { AlpacaOrderExecutionAdapter } from "../adapters/alpaca/orderExecution";
 import { alpacaGet, alpacaTradingBaseUrl } from "../adapters/alpaca/rest";
 import { ReplayBarFeed } from "../adapters/replay/replayBarFeed";
 import { SimulatedExecutionSink } from "../core/execution/simulatedExecution";
+import { LiveQuoteFills, simExecution } from "../core/execution/liveQuoteFills";
+import type { ExecutionConfig } from "../core/execution/quoteFillModel";
 import { BrokerPreflightError, runBrokerPreflight } from "../core/broker/brokerPreflight";
 import { AlpacaClockHours, alwaysOpen, type AlpacaClock } from "../core/market/marketHours";
 import { findBrokerAccount, registerBrokerAccount } from "../adapters/supabase/brokerAccountRepository";
@@ -119,7 +121,7 @@ import type {
   BarReceivedEvent,
 } from "../types/events";
 import type { StrategyRun } from "../types/strategy";
-import type { Symbol } from "../types/common";
+import type { ExecutionMode, Symbol } from "../types/common";
 import { newId } from "../utils/ids";
 import { nowMs, lockClockForLive } from "../utils/time";
 import { logger } from "../utils/logger";
@@ -223,12 +225,21 @@ export async function bootstrapRuntime(config: RuntimeConfig): Promise<void> {
     ? new AlpacaMarketDataAdapter(eventBus, mode, { invalidData: env.marketDataInvalidPolicy, ...latency?.adapterOptions() })
     : new ReplayBarFeed(eventBus, mode, new SupabaseBarCache(), replayWindow());
 
-  // Orders: a sim book fills locally on the next bar; the alpaca targets send
+  // Orders: a sim book fills locally — on the live quotes and trades when this
+  // runtime streams them, otherwise on the next bar; the alpaca targets send
   // them to the account the check above resolved.
   const orderAdapter = target === "sim" ? null : new AlpacaOrderExecutionAdapter(eventBus, mode);
-  const brokerSink = orderAdapter
-    ? sinkFactory(orderAdapter)
-    : new SimulatedExecutionSink(eventBus, symbolState, mode, 5, 0.005, {});
+  let liveFills: LiveQuoteFills | null = null;
+  let brokerSink: IExecutionSink;
+  if (orderAdapter) {
+    brokerSink = sinkFactory(orderAdapter);
+  } else {
+    // Built before the orchestrator, so a trade's fills land before strategies see the trade.
+    const execution = simExecution({
+      streaming: hasDataKeys, model: env.simExecutionModel, latencyMs: env.simLatencyMs, streamUrl: env.alpacaDataStreamUrl,
+    });
+    ({ sink: brokerSink, liveFills } = simOrderBook(eventBus, symbolState, mode, execution));
+  }
   // Every order is written to the ledger before it is sent; if it cannot be,
   // it is not sent (core/execution/journaledExecution.ts).
   const orderJournal = new SupabaseOrderJournal(brokerAccount, isPaper);
@@ -442,6 +453,7 @@ export async function bootstrapRuntime(config: RuntimeConfig): Promise<void> {
   }
 
   orchestrator.start();
+  liveFills?.start();
   latency?.start(eventBus);
   ledger.start();
 
@@ -640,6 +652,7 @@ export async function bootstrapRuntime(config: RuntimeConfig): Promise<void> {
     clearInterval(snapshotTimer);
     clearInterval(leaseTimer);
     orchestrator.stop();
+    liveFills?.stop();
     marketDataAdapter.disconnect();
     orderAdapter?.disconnect();
     clockHours?.stop();
@@ -656,6 +669,21 @@ export async function bootstrapRuntime(config: RuntimeConfig): Promise<void> {
 
   process.on("SIGINT",  () => { shutdown().catch(() => process.exit(1)); });
   process.on("SIGTERM", () => { shutdown().catch(() => process.exit(1)); });
+}
+
+/** A sim runtime's order book, and under the quote model what drives it from the live stream. */
+function simOrderBook(
+  eventBus: EventBus,
+  symbolState: SymbolStateManager,
+  mode: ExecutionMode,
+  execution: ExecutionConfig,
+): { sink: SimulatedExecutionSink; liveFills: LiveQuoteFills | null } {
+  const sink = new SimulatedExecutionSink(eventBus, symbolState, mode, 5, 0.005, {}, execution);
+  const quoteModel = execution.model === "quote";
+  logger.info("bootstrap: sim orders fill locally", {
+    model: execution.model, ...(quoteModel ? { latencyMs: execution.latencyMs, feed: execution.feed } : {}),
+  });
+  return { sink, liveFills: quoteModel ? new LiveQuoteFills(eventBus, sink, execution) : null };
 }
 
 /**
