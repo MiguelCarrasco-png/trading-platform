@@ -92,5 +92,30 @@ export interface PerformanceMetrics {
     riskFreeRateAnnual?: number;
     benchmarkReturn?: number;
     returnPeriods?: number;
+    /** Present when the backtest priced orders from real quotes. */
+    execution?: ExecutionReport;
   };
+}
+
+/** How a quote-model backtest priced its orders (backend ExecutionReport). */
+export interface ExecutionReport {
+  model: "bar" | "quote";
+  latencyMs: number;
+  feed: "sip" | "iex";
+  extraSlippageBps: number;
+  /** Fills priced from a quote on arrival, from trades through a resting limit, and by the bar model. */
+  fills: { quote: number; trade: number; bar: number };
+  /** Orders priced by the bar model instead, by reason. */
+  fallbacks: Record<string, number>;
+  /** IOC limits that were not marketable when they arrived. */
+  expiredUnmarketable: number;
+  /** Resting DAY orders still unfilled at the close. */
+  expiredAtClose?: number;
+  stopsTriggered?: number;
+  /** Minutes a resting order could not be checked because trades were unavailable. */
+  tradeDataUnavailable: number;
+  /** Notional-weighted cost of crossing the spread, vs the mid on arrival (bps). */
+  avgSpreadCostBps: number | null;
+  /** Notional-weighted move of the mid between decision and arrival, against the order (bps). */
+  avgDelayCostBps: number | null;
 }

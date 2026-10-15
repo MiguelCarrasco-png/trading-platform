@@ -49,6 +49,42 @@ describe("CompareSection", () => {
     expect(backtests.saveBacktest).toHaveBeenCalledWith("bt-9");
   });
 
+  it("queues a quote-fill comparison on its own and shows how its fills were priced", async () => {
+    vi.mocked(perf.compareRunWithBacktest).mockResolvedValue({ backtestId: "bt-q" });
+    vi.mocked(backtests.fetchBacktest).mockResolvedValue({
+      id: "bt-q", status: "completed", started_at: 1,
+      config: { name: "bt", strategyConfig: {}, startDate: "", endDate: "", initialCapital: 5_000, dataGranularity: "bar", commissionPerShare: 0 },
+      metrics: {
+        totalReturn: 20, totalReturnPct: 0.004, maxDrawdown: 0, winRate: 1, totalTrades: 1, avgWin: 20, avgLoss: 0,
+        meta: {
+          execution: {
+            model: "quote", latencyMs: 250, feed: "sip", extraSlippageBps: 0, fills: { quote: 2, trade: 0, bar: 0 },
+            fallbacks: {}, expiredUnmarketable: 0, tradeDataUnavailable: 0, avgSpreadCostBps: 0.5, avgDelayCostBps: 0.1,
+          },
+        },
+      },
+      equity_curve: [{ ts: 1, equity: 5_000 }, { ts: 3, equity: 5_020 }],
+    } as never);
+
+    render(<CompareSection report={report} run={{ id: "run-p", strategyType: "pairs_trading" }} />);
+    await userEvent.click(screen.getByRole("button", { name: "Compare with quote fills" }));
+
+    expect(perf.compareRunWithBacktest).toHaveBeenCalledWith("run-p", false, { model: "quote" });
+    expect(await screen.findByText("Backtest of this window, quote fills")).toBeInTheDocument();
+    expect(screen.getByText(/^Backtest, quote fills:/)).toBeInTheDocument();
+    expect(screen.getByText("0.50 bps")).toBeInTheDocument();
+    // The bar-fill comparison is separate and was not queued.
+    expect(screen.queryByText("Backtest of this window")).not.toBeInTheDocument();
+  });
+
+  it("picks up the run's existing quote-fill comparison", async () => {
+    vi.mocked(backtests.fetchBacktest).mockResolvedValue({ id: "bt-q", status: "running" } as never);
+    render(<CompareSection report={report} run={{ id: "run-p", strategyType: "pairs_trading", compareQuoteBacktestId: "bt-q" }} />);
+    expect(await screen.findByText(/Quote-fill backtest running/)).toBeInTheDocument();
+    expect(backtests.fetchBacktest).toHaveBeenCalledWith("bt-q");
+    expect(screen.getByRole("button", { name: "Re-run with quote fills" })).toBeDisabled();
+  });
+
   it("keeps polling while the backtest is queued", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.mocked(backtests.fetchBacktest)

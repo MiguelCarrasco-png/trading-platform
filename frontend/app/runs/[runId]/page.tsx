@@ -104,6 +104,7 @@ export default function RunPage({ params }: Props) {
               id: run.id,
               strategyType: run.strategyType,
               compareBacktestId: (run.meta?.compareBacktestId as string | undefined),
+              compareQuoteBacktestId: (run.meta?.compareQuoteBacktestId as string | undefined),
             } : undefined}
           />
 

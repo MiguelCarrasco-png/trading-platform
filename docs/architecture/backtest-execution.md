@@ -113,7 +113,13 @@ Alpaca adapter sends `stop_price`.
 
 ## Using it
 
-Ask for quote fills per backtest with `execution` in `POST /api/backtests/run`:
+In the app, pick **Real bid/ask on arrival** under Fills in the backtest form,
+and set the order latency. The result then shows how its fills were priced. On
+a run's page, **Compare with quote fills** replays the run's window that way,
+beside the bar-model comparison.
+
+Through the API, ask for quote fills per backtest with `execution` in
+`POST /api/backtests/run`:
 
 ```json
 {
