@@ -4,9 +4,40 @@ You will write a tiny trading strategy, release it, and watch it trade on a pape
 account from the platform's web page. Every step ends with something you can
 **run and see**, so you are never more than a minute from a working state.
 
+## Before you start: local setup
+
+Follow [the setup guide](setup.md) to install Git, Node.js, and Docker Desktop,
+download this repo, configure your own Alpaca paper keys, and sign in locally.
+It includes both local simulation with live data and optional execution on your
+personal Alpaca paper account. Finish its startup checks before Step 1 below.
+
 > The finished version of this strategy already exists as the **answer key**:
 > `backend/src/strategies/beginnerReversal/`. Don't open it until you have tried
-> the steps. You will build your own copy, `my_reversal`, next to it.
+> the steps. You will build your own copy, `jcavallin_reversal`, next to it.
+
+## Choose your own strategy name
+
+Use the **first letter of your first name + your last name**, lowercase, followed
+by `_reversal`. For example, first initial `j` and last name `cavallin` become
+`jcavallin_reversal`. This keeps learners' strategy types, files, and catalog
+entries distinct when their work is combined in the same repo.
+
+The examples below use that name. **Replace the example prefix with your own
+throughout every step**, keeping these forms consistent:
+
+| Where | Example |
+|---|---|
+| Strategy type and log prefix | `jcavallin_reversal` |
+| Folder | `jcavallinReversal` |
+| Strategy file | `jcavallinReversalStrategy.ts` |
+| Class and config interface | `JcavallinReversalStrategy`, `JcavallinReversalConfig` |
+| Manifest export | `jcavallinReversalManifest` |
+| Display name | `Jcavallin Reversal` |
+
+Use only letters for the personal prefix; omit spaces, hyphens, and apostrophes.
+If another learner has the same first initial and last name, agree on a distinct
+suffix before registering your types. Append your entry to the existing type
+lists and catalog; preserve everyone else's entries.
 
 **The strategy in one sentence:** if a stock's latest 1-minute bar closed *higher*
 than the bar before, sell one share; if it closed *lower*, buy one share.
@@ -28,34 +59,38 @@ add one line to the `StrategyType` list:
 
 ```ts
   | "beginner_reversal"
-  | "my_reversal";   // CHANGED: add this line (and move the ";" up from the line above)
+  | "jcavallin_reversal";   // CHANGED: add this line (and move the ";" up from the line above)
 ```
 
-Create `backend/src/strategies/myReversal/myReversalStrategy.ts`:
+Create `backend/src/strategies/jcavallinReversal/jcavallinReversalStrategy.ts`:
 
 ```ts
-// backend/src/strategies/myReversal/myReversalStrategy.ts
+// backend/src/strategies/jcavallinReversal/jcavallinReversalStrategy.ts
 import { BaseStrategy } from "../base/strategy";
 import type { EvaluationContext } from "../base/strategy";
 import type { BaseStrategyConfig, StrategySignal, StrategyType } from "../../types/strategy";
 import type { MarketEventKind } from "../../types/market";
 
-export interface MyReversalConfig extends BaseStrategyConfig {
-  type: "my_reversal";
+export interface JcavallinReversalConfig extends BaseStrategyConfig {
+  type: "jcavallin_reversal";
 }
 
-export class MyReversalStrategy extends BaseStrategy {
-  readonly type: StrategyType = "my_reversal";
+// Defines a class for the strategy that can be used to create and run multiple instances at the same time or manage exectuion - start, stop, pause
+// Same code reused across paper, live, and backtesting
+export class JcavallinReversalStrategy extends BaseStrategy {
+  readonly type: StrategyType = "jcavallin_reversal";
   static readonly VERSION = 1;
-  readonly version = MyReversalStrategy.VERSION;
+  readonly version = JcavallinReversalStrategy.VERSION;
   readonly triggers: readonly MarketEventKind[] = ["bar"]; // call evaluate() only when a bar arrives
 
-  constructor(readonly myConfig: MyReversalConfig) {
+  constructor(readonly myConfig: JcavallinReversalConfig) {
     super(myConfig);
   }
 
+  // Generate signals, later ingested by the core engine for live and paper trading
   evaluate(_context: EvaluationContext): StrategySignal | null {
-    return null; // we will fill this in
+    // we will fill this in the next steps
+    return null; // null = no signal generated; do nothing on this evaluation
   }
 }
 ```
@@ -65,19 +100,20 @@ accepts your class.
 
 ---
 
-## Step 2: Release it and launch it
+## Step 2: Register it and launch it locally
 
-A strategy is invisible until it is **registered** and its status is `ready`.
+A strategy must be **registered** before it can run. Use `experimental` while developing
+locally; `ready` releases it for shared trading.
 Create the manifest, the strategy's "ID card" for the platform:
 
 ```ts
-// backend/src/strategies/myReversal/manifest.ts
+// backend/src/strategies/jcavallinReversal/manifest.ts
 import type { StrategyManifest } from "../../config/strategyManifest";
-import { MyReversalStrategy, type MyReversalConfig } from "./myReversalStrategy";
+import { JcavallinReversalStrategy, type JcavallinReversalConfig } from "./jcavallinReversalStrategy";
 
 const DEFAULTS = {
-  name: "My Reversal",
-  type: "my_reversal",
+  name: "Jcavallin Reversal",
+  type: "jcavallin_reversal",
   symbols: ["SPY"],
   rollingWindowMs: 60_000,
   maxPositionSizeUsd: 10_000,
@@ -85,14 +121,14 @@ const DEFAULTS = {
   enabled: true,
 };
 
-export const myReversalManifest: StrategyManifest = {
-  type: "my_reversal",
-  status: "ready", // planned = hidden, ready = launchable
-  label: "My Reversal",
+export const jcavallinReversalManifest: StrategyManifest = {
+  type: "jcavallin_reversal",
+  status: "experimental", // local sim/personal paper + backtests; ready = shared trading
+  label: "Jcavallin Reversal",
   description: "Sell after an up bar, buy after a down bar.",
-  version: MyReversalStrategy.VERSION,
+  version: JcavallinReversalStrategy.VERSION,
   defaultConfig: DEFAULTS,
-  create: (config) => new MyReversalStrategy({ ...DEFAULTS, ...config } as unknown as MyReversalConfig),
+  create: (config) => new JcavallinReversalStrategy({ ...DEFAULTS, ...config } as unknown as JcavallinReversalConfig),
   params: [{ key: "symbols", label: "Symbols", kind: "symbols" }],
 };
 ```
@@ -100,22 +136,27 @@ export const myReversalManifest: StrategyManifest = {
 Then add it to the list in `backend/src/config/strategyCatalog.ts`:
 
 ```ts
-import { myReversalManifest } from "../strategies/myReversal/manifest"; // CHANGED
+import { jcavallinReversalManifest } from "../strategies/jcavallinReversal/manifest"; // CHANGED
 
 export const STRATEGY_CATALOG: readonly StrategyManifest[] = [
   pairsManifest,
   minuteReversalManifest,
   beginnerReversalManifest,
-  myReversalManifest, // CHANGED
+  jcavallinReversalManifest, // CHANGED
 ];
 ```
 
-**Check it:** restart the backend, open the **Strategies** page, and pick
-**My Reversal** in *Strategy Type*. Click *Save as new configuration*, then
+Also add `| "jcavallin_reversal"` to `StrategyType` in `frontend/types/strategy.ts`.
+
+**Check it:** use `STRATEGY_POLICY_PROFILE=development` and `EXECUTION_TARGET=sim`
+(the local Docker stack already sets these). Restart the backend, open the **Strategies** page, and pick
+**Jcavallin Reversal** in *Strategy Type*. Click *Save as new configuration*, then
 *Start Selected Version on Paper*. A run appears under *All Runs* and... does
 nothing. That is correct: it is running, and has nothing to say yet.
 
-> The `params` list is what draws the form. You wrote no frontend code.
+> The `params` list draws the trading and backtest forms. No separate backtest
+> factory registration is needed. On a shared runtime, this experimental strategy
+> appears on Backtests but is excluded from new trading launches.
 
 ---
 
@@ -126,27 +167,27 @@ looked at, and only act when a **new** one arrives, so a bar that is ever delive
 twice is not counted twice.
 
 ```ts
-// backend/src/strategies/myReversal/myReversalStrategy.ts
+// backend/src/strategies/jcavallinReversal/jcavallinReversalStrategy.ts
 import { BaseStrategy } from "../base/strategy";
 import { logger } from "../../utils/logger"; // CHANGED
 import type { EvaluationContext } from "../base/strategy";
 import type { BaseStrategyConfig, StrategySignal, StrategyType } from "../../types/strategy";
 import type { MarketEventKind } from "../../types/market";
 
-export interface MyReversalConfig extends BaseStrategyConfig {
-  type: "my_reversal";
+export interface JcavallinReversalConfig extends BaseStrategyConfig {
+  type: "jcavallin_reversal";
 }
 
-export class MyReversalStrategy extends BaseStrategy {
-  readonly type: StrategyType = "my_reversal";
+export class JcavallinReversalStrategy extends BaseStrategy {
+  readonly type: StrategyType = "jcavallin_reversal";
   static readonly VERSION = 1;
-  readonly version = MyReversalStrategy.VERSION;
+  readonly version = JcavallinReversalStrategy.VERSION;
   readonly triggers: readonly MarketEventKind[] = ["bar"]; // call evaluate() only when a bar arrives
 
   /** The last bar we looked at, per symbol. */ // CHANGED (this and everything below)
   private readonly lastBar = new Map<string, { ts: number; close: number }>();
 
-  constructor(readonly myConfig: MyReversalConfig) {
+  constructor(readonly myConfig: JcavallinReversalConfig) {
     super(myConfig);
   }
 
@@ -161,7 +202,7 @@ export class MyReversalStrategy extends BaseStrategy {
     if (prev && bar.ts <= prev.ts) return null; // same bar as last time
     this.lastBar.set(symbol, { ts: bar.ts, close: bar.close });
 
-    logger.info(`my_reversal: ${symbol} new bar, close ${bar.close}`);
+    logger.info(`jcavallin_reversal: ${symbol} new bar, close ${bar.close}`);
     return null;
   }
 }
@@ -181,26 +222,26 @@ Compare the new bar with the one before it. The first bar has nothing to compare
 against, so it only sets the baseline.
 
 ```ts
-// backend/src/strategies/myReversal/myReversalStrategy.ts
+// backend/src/strategies/jcavallinReversal/jcavallinReversalStrategy.ts
 import { BaseStrategy } from "../base/strategy";
 import { logger } from "../../utils/logger";
 import type { EvaluationContext } from "../base/strategy";
 import type { BaseStrategyConfig, StrategySignal, StrategyType } from "../../types/strategy";
 import type { MarketEventKind } from "../../types/market";
 
-export interface MyReversalConfig extends BaseStrategyConfig {
-  type: "my_reversal";
+export interface JcavallinReversalConfig extends BaseStrategyConfig {
+  type: "jcavallin_reversal";
 }
 
-export class MyReversalStrategy extends BaseStrategy {
-  readonly type: StrategyType = "my_reversal";
+export class JcavallinReversalStrategy extends BaseStrategy {
+  readonly type: StrategyType = "jcavallin_reversal";
   static readonly VERSION = 1;
-  readonly version = MyReversalStrategy.VERSION;
+  readonly version = JcavallinReversalStrategy.VERSION;
   readonly triggers: readonly MarketEventKind[] = ["bar"]; // call evaluate() only when a bar arrives
 
   private readonly lastBar = new Map<string, { ts: number; close: number }>();
 
-  constructor(readonly myConfig: MyReversalConfig) {
+  constructor(readonly myConfig: JcavallinReversalConfig) {
     super(myConfig);
   }
 
@@ -218,7 +259,7 @@ export class MyReversalStrategy extends BaseStrategy {
     if (!prev || bar.close === prev.close) return null; // CHANGED (everything below)
 
     const side = bar.close > prev.close ? "sell" : "buy";
-    logger.info(`my_reversal: ${symbol} ${prev.close} -> ${bar.close}, so ${side} 1 share`);
+    logger.info(`jcavallin_reversal: ${symbol} ${prev.close} -> ${bar.close}, so ${side} 1 share`);
 
     return this.buildSignal({
       symbol,
@@ -242,7 +283,7 @@ Right now a long run of up bars would keep selling short. Add a safety cap, and
 label trades that *reduce* a position as closes.
 
 ```ts
-// backend/src/strategies/myReversal/myReversalStrategy.ts
+// backend/src/strategies/jcavallinReversal/jcavallinReversalStrategy.ts
 import { BaseStrategy } from "../base/strategy";
 import { logger } from "../../utils/logger";
 import type { EvaluationContext } from "../base/strategy";
@@ -251,19 +292,19 @@ import type { MarketEventKind } from "../../types/market";
 
 const MAX_POSITION = 1; // CHANGED: most shares we will hold, long or short
 
-export interface MyReversalConfig extends BaseStrategyConfig {
-  type: "my_reversal";
+export interface JcavallinReversalConfig extends BaseStrategyConfig {
+  type: "jcavallin_reversal";
 }
 
-export class MyReversalStrategy extends BaseStrategy {
-  readonly type: StrategyType = "my_reversal";
+export class JcavallinReversalStrategy extends BaseStrategy {
+  readonly type: StrategyType = "jcavallin_reversal";
   static readonly VERSION = 2; // CHANGED: the logic changed, so the version goes up
-  readonly version = MyReversalStrategy.VERSION;
+  readonly version = JcavallinReversalStrategy.VERSION;
   readonly triggers: readonly MarketEventKind[] = ["bar"]; // call evaluate() only when a bar arrives
 
   private readonly lastBar = new Map<string, { ts: number; close: number }>();
 
-  constructor(readonly myConfig: MyReversalConfig) {
+  constructor(readonly myConfig: JcavallinReversalConfig) {
     super(myConfig);
   }
 
@@ -286,7 +327,7 @@ export class MyReversalStrategy extends BaseStrategy {
     const after = position + (side === "buy" ? 1 : -1);
     if (Math.abs(after) > MAX_POSITION) return null; // would hold too much: skip
 
-    logger.info(`my_reversal: ${symbol} ${prev.close} -> ${bar.close}, so ${side} 1 share`);
+    logger.info(`jcavallin_reversal: ${symbol} ${prev.close} -> ${bar.close}, so ${side} 1 share`);
 
     return this.buildSignal({
       symbol,
@@ -314,12 +355,12 @@ stay between -1 and +1.
 Hard-coded numbers are for prototypes. Move `MAX_POSITION` into the config so it
 shows up in the form. Three small edits:
 
-**1.** In `myReversalStrategy.ts`, delete the `MAX_POSITION` constant, add the
+**1.** In `jcavallinReversalStrategy.ts`, delete the `MAX_POSITION` constant, add the
 field to the config, and read it from there:
 
 ```ts
-export interface MyReversalConfig extends BaseStrategyConfig {
-  type: "my_reversal";
+export interface JcavallinReversalConfig extends BaseStrategyConfig {
+  type: "jcavallin_reversal";
   maxPositionQty: number; // CHANGED
 }
 // ...
@@ -348,6 +389,26 @@ that is how a team can later see who changed what, and why.
 
 You have now done the whole loop that professional quant teams do: **write → register
 → configure → paper trade → record what changed.**
+
+---
+
+## Backtest your strategy
+
+After step 5 (or step 6), open **Backtests**, choose **Jcavallin Reversal (experimental)**,
+and choose your saved configuration or enter a new one. Select dates with cached
+or fetchable 1-minute bars, choose the initial capital and fill model, then press
+**Run Backtest**. Inspect orders, fills, rejected orders, and the equity curve. If you
+edit a saved configuration for a test, save a new configuration/version before using
+the result as evidence for that exact saved version.
+
+The historical worker and paper runner instantiate the same class through the
+catalog. Historical playback and live execution use different data/execution adapters,
+so their fills need not match. Backtesting a prototype is allowed on shared cloud
+runtimes too; it does not release it for shared paper or real-money trading.
+
+When you want the team to launch it on the shared paper account, change its manifest
+status to `ready`, review/test the change, and deploy it. Real-money runs still need
+the existing lead approval. The Beginner Reversal answer key stays hidden throughout.
 
 ---
 

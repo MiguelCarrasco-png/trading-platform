@@ -4,8 +4,8 @@ import * as repositories from "../../adapters/supabase/repositories";
 import * as review from "../../adapters/supabase/reviewRepositories";
 import { getSupabaseClient } from "../../adapters/supabase/client";
 import { PairsStrategy } from "../../strategies/pairs/pairsStrategy";
-import { BeginnerReversalStrategy } from "../../strategies/beginnerReversal/beginnerReversalStrategy";
-import { STRATEGY_DEFINITIONS, STRATEGY_FACTORY, isLaunchable } from "../../config/strategyDefaults";
+import { strategyDefinition } from "../../config/strategyPolicy";
+import { STRATEGY_DEFINITIONS, STRATEGY_FACTORY } from "../../config/strategyDefaults";
 
 jest.mock("../../adapters/supabase/repositories");
 jest.mock("../../adapters/supabase/reviewRepositories");
@@ -158,7 +158,7 @@ describe("Strategies HTTP API", () => {
     const original = definition.status;
     afterEach(() => { definition.status = original; });
 
-    test("GET /configs/types lists ready types and hides planned ones", async () => {
+    test("GET /configs/types keeps the answer key hidden even when ready", async () => {
       signedInAs();
       definition.status = "planned";
       const hidden = await request(app).get("/api/strategies/configs/types").set("Authorization", "Bearer valid");
@@ -170,11 +170,7 @@ describe("Strategies HTTP API", () => {
 
       definition.status = "ready";
       const shown = await request(app).get("/api/strategies/configs/types").set("Authorization", "Bearer valid");
-      expect(shown.body.find((d: { type: string }) => d.type === "beginner_reversal")).toMatchObject({
-        status: "ready",
-        algorithmVersion: BeginnerReversalStrategy.VERSION,
-        params: expect.arrayContaining([expect.objectContaining({ key: "qtyPerTrade" })]),
-      });
+      expect(shown.body.map((d: { type: string }) => d.type)).not.toContain("beginner_reversal");
     });
 
     test("POST /configs refuses a planned type but accepts it once ready", async () => {
@@ -198,7 +194,7 @@ describe("Strategies HTTP API", () => {
     test("restoring a persisted run still resolves the factory for a non-ready type", () => {
       definition.status = "retired";
       expect(STRATEGY_FACTORY.beginner_reversal).toBeInstanceOf(Function);
-      expect(isLaunchable("beginner_reversal")).toBe(false);
+      expect(strategyDefinition("beginner_reversal")?.actions.startTrading.allowed).toBe(false);
     });
   });
 
