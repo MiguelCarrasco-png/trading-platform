@@ -232,9 +232,11 @@ export class RiskEngine {
 
   /**
    * Estimates the worst-case fill price for capital reservation purposes.
-   * Limit orders: returns `intent.limitPrice` directly (limit IS the worst case).
+   * Limit orders (and stop-limits): returns `intent.limitPrice` directly (limit IS the worst case).
    * Market orders: applies a composite buffer (gap + spread + slippage) to `mid`
    * directionally — buys get a higher price, sells get a lower price.
+   * Stop orders: the same buffer from the stop price when it is the worse side
+   * of the market — a buy stop above the market executes at or above its stop.
    *
    * @param side - Order side
    * @param intent - The order intent
@@ -244,8 +246,10 @@ export class RiskEngine {
   estimateWorstCasePrice(side: "buy" | "sell", intent: OrderIntent, mid: number | null): number | null {
     if (intent.limitPrice != null && Number.isFinite(intent.limitPrice)) return intent.limitPrice;
     if (mid == null || mid <= 0) return null;
+    const stop = intent.stopPrice != null && Number.isFinite(intent.stopPrice) ? intent.stopPrice : null;
+    const base = stop === null ? mid : side === "buy" ? Math.max(mid, stop) : Math.min(mid, stop);
     const totalBps = (this.config.gapBufferBps + this.config.spreadBufferBps) / 10_000;
-    return side === "buy" ? mid * (1 + totalBps) : mid * (1 - totalBps);
+    return side === "buy" ? base * (1 + totalBps) : base * (1 - totalBps);
   }
 
   /**

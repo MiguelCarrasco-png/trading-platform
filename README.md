@@ -155,6 +155,8 @@ z = (spread - mean(spread)) / std(spread)
 
 Statistics are computed over a rolling time window (default: 1 hour). A minimum of 30 observations is required before any signal is generated, ensuring the statistics are meaningful.
 
+The strategy takes one observation per minute, from both legs' completed 1-minute bars (their closes), and only when both legs printed a bar that minute. It declares `triggers: ["bar"]`, so the orchestrator never calls it on quotes or trades: live runs and backtests sample the spread identically.
+
 ### Signal Logic
 
 | Condition | Action |

@@ -10,6 +10,21 @@
 
 import type { EpochMs, Symbol, ISOTimestamp } from "./common";
 
+/** The kinds of market data event that reach symbol state and strategies. */
+export type MarketEventKind = "bar" | "quote" | "trade";
+
+/** Alpaca historical data feeds: consolidated across all exchanges (SIP), or IEX only. */
+export type HistoricalFeed = "sip" | "iex";
+
+/** Tick-level historical record kinds, named as Alpaca's endpoints are. */
+export type TickKind = "quotes" | "trades";
+
+/** A historical quote or trade exactly as Alpaca returned it; `t` is RFC 3339 with up to nanoseconds. */
+export interface RawTick {
+  t: string;
+  [field: string]: unknown;
+}
+
 // ------------------------------------------------------------------
 // Quote (top-of-book bid/ask snapshot)
 // ------------------------------------------------------------------

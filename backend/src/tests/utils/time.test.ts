@@ -4,6 +4,8 @@ import {
   isStale,
   formatTs,
   timeframeToMs,
+  barEndMs,
+  rfc3339ToNanos,
   startOfDayUtcMs,
 } from '../../utils/time';
 
@@ -78,8 +80,42 @@ describe('timeframeToMs', () => {
     expect(timeframeToMs('2d')).toBe(172_800_000);
   });
 
+  it("converts Alpaca's REST timeframe names", () => {
+    expect(timeframeToMs('1Min')).toBe(60_000);
+    expect(timeframeToMs('15Min')).toBe(900_000);
+    expect(timeframeToMs('1Hour')).toBe(3_600_000);
+    expect(timeframeToMs('1Day')).toBe(86_400_000);
+  });
+
   it('throws for an unknown timeframe unit', () => {
     expect(() => timeframeToMs('1x')).toThrow('Unknown timeframe unit');
+    expect(() => timeframeToMs('1Month')).toThrow('Unknown timeframe unit');
+    expect(() => timeframeToMs('Min')).toThrow('Unknown timeframe unit');
+  });
+});
+
+describe('rfc3339ToNanos', () => {
+  it('keeps the sub-millisecond digits Date.parse drops', () => {
+    const ms = Date.parse('2026-10-07T14:00:00Z');
+    expect(rfc3339ToNanos('2026-10-07T14:00:00.123456789Z')).toBe(BigInt(ms) * 1_000_000n + 123_456_789n);
+    expect(rfc3339ToNanos('2026-10-07T14:00:00.1Z')).toBe(BigInt(ms) * 1_000_000n + 100_000_000n);
+    expect(rfc3339ToNanos('2026-10-07T14:00:00Z')).toBe(BigInt(ms) * 1_000_000n);
+  });
+
+  it('honours a numeric offset', () => {
+    expect(rfc3339ToNanos('2026-10-07T10:00:00.5-04:00')).toBe(rfc3339ToNanos('2026-10-07T14:00:00.5Z'));
+  });
+});
+
+describe('barEndMs', () => {
+  it('is the start plus the timeframe, in either naming', () => {
+    expect(barEndMs({ ts: 600_000, timeframe: '1Min' })).toBe(660_000);
+    expect(barEndMs({ ts: 600_000, timeframe: '1m' })).toBe(660_000);
+    expect(barEndMs({ ts: 600_000, timeframe: '5Min' })).toBe(900_000);
+  });
+
+  it('treats an unrecognised timeframe as one minute', () => {
+    expect(barEndMs({ ts: 600_000, timeframe: '' })).toBe(660_000);
   });
 });
 

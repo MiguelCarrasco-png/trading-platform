@@ -775,3 +775,28 @@ describe("Orchestrator: hasStrategyWithConfigId", () => {
     expect(orch.hasStrategyWithConfigId("run-abc")).toBe(false);
   });
 });
+
+describe("Orchestrator: registeredStrategies", () => {
+  it("lists every registered strategy and marks launched runs by their run id", () => {
+    const bus = new EventBus();
+    const orch = makeOrchestrator(bus);
+    expect(orch.registeredStrategies()).toEqual([]);
+
+    const launched = makeStrategy("s1");
+    const startup = makeStrategy("s2");
+    orch.registerStrategy(launched, "run-1");
+    orch.registerStrategy(startup);
+
+    const listed = orch.registeredStrategies();
+    expect(listed).toHaveLength(2);
+    expect(listed.find((r) => r.strategy === launched)).toMatchObject({ key: "run-1", runId: "run-1" });
+    expect(listed.find((r) => r.strategy === startup)?.runId).toBeUndefined();
+  });
+
+  it("drops a strategy once it is deregistered", () => {
+    const orch = makeOrchestrator(new EventBus());
+    orch.registerStrategy(makeStrategy("s1"), "run-1");
+    orch.deregisterStrategy("run-1");
+    expect(orch.registeredStrategies()).toEqual([]);
+  });
+});

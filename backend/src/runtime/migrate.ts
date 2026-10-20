@@ -54,7 +54,9 @@ const SIGNATURES: Record<string, string> = {
   "0011": "select to_regprocedure('public.touch_backtest_job(uuid, text, integer, jsonb)') is not null",
   "0012": "select exists (select 1 from information_schema.columns where table_name = 'strategy_runs' and column_name = 'runtime_origin')",
   "0013": "select exists (select 1 from information_schema.columns where table_name = 'app_users' and column_name = 'membership_status')",
-  "0014": "select to_regprocedure('public.save_strategy_version(uuid, text, jsonb, text, uuid)') is not null",
+  // 0018 replaces save_strategy_version with a six-argument signature, so probe by name only.
+  "0014": "select exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'save_strategy_version')",
+  "0018": "select exists (select 1 from information_schema.columns where table_name = 'strategy_versions' and column_name = 'algorithm_version')",
 };
 
 function listMigrations(): MigrationFile[] {

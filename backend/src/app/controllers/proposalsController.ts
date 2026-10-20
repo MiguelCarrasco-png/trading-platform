@@ -42,7 +42,8 @@ import {
   updateStrategy,
   StrategyAlreadyLiveError,
 } from "../../adapters/supabase/repositories";
-import { STRATEGY_DEFINITIONS, STRATEGY_FACTORY } from "../../config/strategyDefaults";
+import { strategyDefinition } from "../../config/strategyPolicy";
+import { STRATEGY_DEFINITIONS, STRATEGY_FACTORY, configProblem } from "../../config/strategyDefaults";
 import { env } from "../../config/env";
 import { newId } from "../../utils/ids";
 import { nowMs } from "../../utils/time";
@@ -106,6 +107,12 @@ export async function createVersion(req: Request, res: Response): Promise<void> 
     res.status(403).json({ error: "Only the strategy owner or a lead may create a version" });
     return;
   }
+  const problem = configProblem(strategy.strategy_type, config);
+  if (problem) {
+    logger.warn("createVersion: config rejected", { strategyId, strategyType: strategy.strategy_type, userId: req.user!.id, problem });
+    res.status(400).json({ error: `Invalid configuration: ${problem}` });
+    return;
+  }
 
   try {
     const version = await insertStrategyVersion({
@@ -113,6 +120,7 @@ export async function createVersion(req: Request, res: Response): Promise<void> 
       config,
       changeSummary: changeSummary ?? null,
       createdBy: req.user!.id,
+      algorithmVersion: STRATEGY_DEFINITIONS[strategy.strategy_type]?.algorithmVersion ?? null,
     });
 
     // Keep strategies.config pointing at the newest version so every existing
@@ -451,6 +459,10 @@ export async function approveProposal(req: Request, res: Response): Promise<void
   const factory = strategyType ? STRATEGY_FACTORY[strategyType] : undefined;
   if (!factory) {
     res.status(400).json({ error: `Unknown strategy type: ${strategyType}` });
+    return;
+  }
+  if (!strategyDefinition(strategyType as string, { profile: "shared", executionTarget: "alpaca-live" })?.actions.startTrading.allowed) {
+    res.status(400).json({ error: `Strategy type ${strategyType} is not available for new runs` });
     return;
   }
 

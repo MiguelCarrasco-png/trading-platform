@@ -567,6 +567,22 @@ describe('createVersion', () => {
     expect((res.payload as { attachedToProposalId: string }).attachedToProposalId).toBe('prop-1');
   });
 
+  it('records the algorithm version the new version was written for', async () => {
+    mockGetStrategy.mockResolvedValue({ id: 'strat-1', name: 'Pairs', strategy_type: 'pairs_trading' });
+    mockInsertVersion.mockResolvedValue(makeVersion({ id: 'ver-5' }));
+    mockUpdateStrategy.mockResolvedValue(undefined);
+    mockGetOpen.mockResolvedValue(null);
+
+    await createVersion(
+      mockReq({ params: { strategyId: 'strat-1' } as never, body: { config: { type: 'pairs_trading' } } }),
+      mockRes(),
+    );
+
+    expect(mockInsertVersion).toHaveBeenCalledWith(
+      expect.objectContaining({ algorithmVersion: PairsStrategy.VERSION }),
+    );
+  });
+
   it('does not attach anything when there is no open proposal', async () => {
     mockGetStrategy.mockResolvedValue({ id: 'strat-1', name: 'Pairs: XOM/CVX' });
     mockInsertVersion.mockResolvedValue(makeVersion({ id: 'ver-2' }));

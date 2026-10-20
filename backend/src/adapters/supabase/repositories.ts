@@ -850,7 +850,9 @@ function stableStringify(val: unknown): string {
 
 // Returns a stable fingerprint over the fields that define a unique backtest run.
 // Excludes id, name, description, and meta since they don't affect the simulation.
-// Includes strategyVersion so results from outdated algorithm versions are not reused.
+// Includes strategyVersion so results from outdated algorithm versions are not reused,
+// and engineVersion (absent on configs from before it existed: v1) so results from
+// different simulation semantics are not either.
 // Exported so the controller can compute the key without an extra DB round-trip
 // (used for in-flight dedup against concurrent identical requests).
 export function backtestConfigKey(config: BacktestConfig): string {
@@ -861,10 +863,12 @@ export function backtestConfigKey(config: BacktestConfig): string {
     slippageBps: config.slippageBps,
     commissionPerShare: config.commissionPerShare,
     dataGranularity: config.dataGranularity,
+    engineVersion: config.engineVersion ?? 1,
     strategyVersion: config.strategyVersion ?? null,
     strategyConfig: config.strategyConfig,
     riskConfig: config.riskConfig ?? null,
     fillModel: config.fillModel ?? null,
+    execution: config.execution ?? null,
     riskFreeRateAnnual: config.riskFreeRateAnnual ?? 0,
     benchmarkCurve: config.benchmarkCurve ?? null,
   });

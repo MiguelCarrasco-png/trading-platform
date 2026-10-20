@@ -13,7 +13,12 @@ import {
   StrategyAlreadyLiveError,
 } from "../../adapters/supabase/repositories";
 import { getStrategyVersionById, insertStrategyVersion, saveStrategyVersion } from "../../adapters/supabase/reviewRepositories";
-import { STRATEGY_DEFINITIONS, STRATEGY_FACTORY } from "../../config/strategyDefaults";
+import {
+  STRATEGY_DEFINITIONS,
+  STRATEGY_FACTORY,
+  configProblem,
+} from "../../config/strategyDefaults";
+import { runtimeStrategyPolicy, strategyDefinition, visibleStrategyDefinitions } from "../../config/strategyPolicy";
 import { insertRunEvent } from "../../adapters/supabase/analyticsRepository";
 import { allocatedCapital } from "../../core/analytics/runPerformance";
 import { env } from "../../config/env";
@@ -118,6 +123,12 @@ export async function startStrategyRun(req: Request, res: Response): Promise<voi
     res.status(400).json({ error: `Unknown strategy type: ${strategyType}` });
     return;
   }
+  // Status gates NEW runs only; a run that already exists is restored by type alone.
+  const action = strategyDefinition(strategyType, runtimeStrategyPolicy((req.app.locals.ctx as AppContext).executionTarget))?.actions.startTrading;
+  if (!action?.allowed) {
+    res.status(400).json({ error: action?.reason ?? `Unknown strategy type: ${strategyType}` });
+    return;
+  }
 
   if (orchestrator.hasStrategyWithConfigId(configId)) {
     res.status(409).json({ error: `A strategy from config ${configId} is already running` });
@@ -149,7 +160,19 @@ export async function startStrategyRun(req: Request, res: Response): Promise<voi
       maxCapitalPct: Math.min(requestedCap, env.sandboxMaxCapitalPct),
     },
   };
-  const strategy = factory(effectiveConfig);
+  // A saved version can still be unrunnable (saved before validation existed, or
+  // by a strategy without a save-time check). Say so, rather than a generic 500.
+  let strategy;
+  try {
+    strategy = factory(effectiveConfig);
+  } catch (err) {
+    const problem = err instanceof Error ? err.message : String(err);
+    logger.warn("startStrategyRun: config rejected by the strategy", {
+      strategyId: configId, versionId, strategyType, userId: req.user!.id, problem,
+    });
+    res.status(400).json({ error: `This version cannot run: ${problem}`, detail: "Fix the configuration and save a new version." });
+    return;
+  }
 
   await liveRuns.prepare(strategy);
 
@@ -264,6 +287,15 @@ export async function listStrategies(_req: Request, res: Response): Promise<void
   }
 }
 
+/**
+ * GET /api/strategies/configs/types
+ * Visible catalog entries with operation-specific eligibility for this runtime.
+ */
+export function listStrategyTypes(req: Request, res: Response): void {
+  const ctx = req.app.locals.ctx as AppContext;
+  res.json(visibleStrategyDefinitions(runtimeStrategyPolicy(ctx?.executionTarget)));
+}
+
 /** GET /api/strategies/configs/defaults/:type */
 export async function getStrategyDefaults(req: Request, res: Response): Promise<void> {
   const type = String(req.params.type);
@@ -272,7 +304,8 @@ export async function getStrategyDefaults(req: Request, res: Response): Promise<
     res.status(404).json({ error: `No default config for strategy type: ${type}` });
     return;
   }
-  res.json(def);
+  const ctx = req.app.locals.ctx as AppContext;
+  res.json(strategyDefinition(type, runtimeStrategyPolicy(ctx?.executionTarget)));
 }
 
 /**
@@ -299,6 +332,17 @@ export async function createStrategy(req: Request, res: Response): Promise<void>
     res.status(400).json({ error: `Unknown strategy type: ${strategy_type}` });
     return;
   }
+  const saveAction = strategyDefinition(strategy_type)!.actions.save;
+  if (!saveAction.allowed) {
+    res.status(400).json({ error: saveAction.reason });
+    return;
+  }
+  const problem = configProblem(strategy_type, config);
+  if (problem) {
+    logger.warn("createStrategy: config rejected", { strategy_type, userId: req.user!.id, problem });
+    res.status(400).json({ error: `Invalid configuration: ${problem}` });
+    return;
+  }
   try {
     const strategy = await insertStrategy({ strategy_type, name, config, owner_id: req.user!.id });
 
@@ -308,6 +352,7 @@ export async function createStrategy(req: Request, res: Response): Promise<void>
         config,
         changeSummary: "Initial version",
         createdBy: req.user!.id,
+        algorithmVersion: def.algorithmVersion,
       });
     } catch (versionErr) {
       await deleteStrategy(strategy.id);
@@ -346,12 +391,19 @@ export async function updateStrategyConfig(req: Request, res: Response): Promise
       res.status(403).json({ error: "Only the strategy owner or a lead may edit this strategy" });
       return;
     }
+    const problem = configProblem(existing.strategy_type, config);
+    if (problem) {
+      logger.warn("updateStrategyConfig: config rejected", { configId, strategyType: existing.strategy_type, userId: req.user!.id, problem });
+      res.status(400).json({ error: `Invalid configuration: ${problem}` });
+      return;
+    }
     const version = await saveStrategyVersion({
       strategyId: configId,
       name,
       config,
       changeSummary: changeSummary?.trim() || "Updated strategy configuration",
       createdBy: req.user!.id,
+      algorithmVersion: STRATEGY_DEFINITIONS[existing.strategy_type]?.algorithmVersion ?? null,
     });
     res.json({ message: "Strategy updated", version });
   } catch (err) {

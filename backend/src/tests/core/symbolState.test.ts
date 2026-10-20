@@ -166,6 +166,38 @@ describe('onBar', () => {
   });
 });
 
+describe('latestMidTs', () => {
+  it('is the quote time when a quote set the mid', () => {
+    const mgr = new SymbolStateManager();
+    mgr.onQuote(makeQuote('SPY', 100, 5_000));
+    expect(mgr.get('SPY')!.latestMidTs).toBe(5_000);
+  });
+
+  it("is the bar's end, not its start, when a bar close set the mid", () => {
+    const mgr = new SymbolStateManager();
+    mgr.onBar(makeBar('SPY', 100, 60_000));
+    expect(mgr.get('SPY')!.latestMid).toBe(100);
+    expect(mgr.get('SPY')!.latestMidTs).toBe(120_000);
+  });
+
+  it('moves to a quote that arrives after the bar completed', () => {
+    const mgr = new SymbolStateManager();
+    mgr.onBar(makeBar('SPY', 100, 60_000));
+    mgr.onQuote(makeQuote('SPY', 101, 121_500));
+    expect(mgr.get('SPY')!.latestMid).toBe(101);
+    expect(mgr.get('SPY')!.latestMidTs).toBe(121_500);
+  });
+
+  it('keeps a fresher quote mid when an older bar arrives after it', () => {
+    const mgr = new SymbolStateManager();
+    mgr.onQuote(makeQuote('SPY', 101, 150_000));
+    mgr.onBar(makeBar('SPY', 100, 60_000)); // completed at 120_000
+    expect(mgr.get('SPY')!.latestMid).toBe(101);
+    expect(mgr.get('SPY')!.latestMidTs).toBe(150_000);
+    expect(mgr.get('SPY')!.latestBar!.close).toBe(100);
+  });
+});
+
 describe('clear', () => {
   it('removes all tracked symbol states', () => {
     const mgr = new SymbolStateManager();

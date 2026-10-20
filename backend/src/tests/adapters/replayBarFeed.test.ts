@@ -38,13 +38,13 @@ function setup(barsBySymbol: Record<string, Bar[]>, speed = 1) {
 }
 
 describe('ReplayBarFeed', () => {
-  it('publishes bars minute by minute, re-stamped with the publish time', async () => {
+  it('publishes bars minute by minute, re-stamped as the minute ending at publish time', async () => {
     const { feed, published, step } = setup({ SPY: [bar('SPY', T0), bar('SPY', T0 + MIN, 101)] });
     feed.subscribe(['SPY']);
     await feed.connect();
     expect(step()).toBe(0);
     expect(published).toHaveLength(1);
-    expect(published[0]).toMatchObject({ symbol: 'SPY', close: 100, ts: 1_000_000, timeframe: '1m' });
+    expect(published[0]).toMatchObject({ symbol: 'SPY', close: 100, ts: 1_000_000 - MIN, timeframe: '1m' });
     expect(step()).toBe(MIN);
     expect(published[1].close).toBe(101);
   });

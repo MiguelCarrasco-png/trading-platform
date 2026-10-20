@@ -4,10 +4,18 @@ import * as repositories from "../../adapters/supabase/repositories";
 import * as review from "../../adapters/supabase/reviewRepositories";
 import { getSupabaseClient } from "../../adapters/supabase/client";
 import { PairsStrategy } from "../../strategies/pairs/pairsStrategy";
+import { strategyDefinition } from "../../config/strategyPolicy";
+import { STRATEGY_DEFINITIONS, STRATEGY_FACTORY } from "../../config/strategyDefaults";
+import { BeginnerReversalStrategy } from "../../strategies/beginnerReversal/beginnerReversalStrategy";
+import type { AppContext } from "../../app/context";
 
 jest.mock("../../adapters/supabase/repositories");
 jest.mock("../../adapters/supabase/reviewRepositories");
 jest.mock("../../adapters/supabase/client");
+jest.mock("../../adapters/supabase/analyticsRepository", () => ({
+  ...jest.requireActual("../../adapters/supabase/analyticsRepository"),
+  insertRunEvent: jest.fn().mockResolvedValue(undefined),
+}));
 
 const mockGetAll = repositories.getAllStrategyRuns as jest.Mock;
 const mockGetById = repositories.getStrategyRunById as jest.Mock;
@@ -85,6 +93,41 @@ describe("Strategies HTTP API", () => {
   // POST /api/strategies/start — start a run
   // -------------------------------------------------------------------------
   describe("POST /api/strategies/start", () => {
+    test("starts a saved beginner version on the paper runner using the catalog factory", async () => {
+      signedInAs();
+      mockGetStrategyById.mockResolvedValue({
+        id: "cfg-beginner", owner_id: "user-1", name: "Beginner UI check", strategy_type: "beginner_reversal",
+      });
+      (review.getStrategyVersionById as jest.Mock).mockResolvedValue({
+        id: "ver-beginner", strategyId: "cfg-beginner", config: { symbols: ["SPY"], maxPositionQty: 2 },
+      });
+      (repositories.countRunningRunsForOwner as jest.Mock).mockResolvedValue(0);
+      (repositories.insertStrategyRun as jest.Mock).mockResolvedValue(undefined);
+      const activate = jest.fn();
+      const prepare = jest.fn().mockResolvedValue(undefined);
+      const runner = createApp({
+        executionMode: "paper", executionTarget: "sim",
+        orchestrator: { hasStrategyWithConfigId: () => false },
+        liveRuns: {
+          prepare, activate,
+          leaseFields: () => ({ leaseOwner: "test-runner", leaseExpiresAt: Date.now() + 90_000 }),
+        },
+      } as unknown as AppContext);
+
+      const res = await request(runner).post("/api/strategies/start")
+        .set("Authorization", "Bearer valid")
+        .send({ strategyId: "cfg-beginner", versionId: "ver-beginner" });
+
+      expect(res.status).toBe(201);
+      expect(res.body).toMatchObject({ strategyType: "beginner_reversal", executionMode: "paper", versionId: "ver-beginner" });
+      const strategy = prepare.mock.calls[0][0];
+      expect(strategy).toBeInstanceOf(BeginnerReversalStrategy);
+      expect(strategy.config).toMatchObject({ id: "cfg-beginner", symbols: ["SPY"], qtyPerTrade: 1, maxPositionQty: 2 });
+      expect(activate).toHaveBeenCalledWith(res.body.id, strategy, expect.any(Number));
+      expect((repositories.insertStrategyRun as jest.Mock).mock.invocationCallOrder[0])
+        .toBeLessThan(activate.mock.invocationCallOrder[0]);
+    });
+
     test("returns 503 when no orchestrator context (API-only mode)", async () => {
       signedInAs();
       const res = await request(app)
@@ -150,6 +193,123 @@ describe("Strategies HTTP API", () => {
     });
   });
 
+  // The release gate: status decides what can be listed and created, never what already runs.
+  describe("strategy status gate", () => {
+    const definition = STRATEGY_DEFINITIONS.beginner_reversal;
+    const original = definition.status;
+    afterEach(() => { definition.status = original; });
+
+    test("GET /configs/types hides planned types and exposes the ready beginner strategy with its form", async () => {
+      signedInAs();
+      definition.status = "planned";
+      const hidden = await request(app).get("/api/strategies/configs/types").set("Authorization", "Bearer valid");
+      expect(hidden.status).toBe(200);
+      expect(hidden.body.map((d: { type: string }) => d.type)).toEqual(
+        expect.arrayContaining(["pairs_trading"]),
+      );
+      expect(hidden.body.map((d: { type: string }) => d.type)).not.toContain("beginner_reversal");
+
+      definition.status = "ready";
+      const shown = await request(app).get("/api/strategies/configs/types").set("Authorization", "Bearer valid");
+      expect(shown.status).toBe(200);
+      expect(shown.body).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: "beginner_reversal",
+          status: "ready",
+          actions: expect.objectContaining({
+            save: { allowed: true }, backtest: { allowed: true }, startTrading: { allowed: true },
+          }),
+          params: expect.arrayContaining([
+            expect.objectContaining({ key: "symbols", kind: "symbols" }),
+            expect.objectContaining({ key: "qtyPerTrade", kind: "number" }),
+            expect.objectContaining({ key: "maxPositionQty", kind: "number" }),
+          ]),
+        }),
+      ]));
+    });
+
+    test("POST /configs refuses a planned type but accepts it once ready", async () => {
+      signedInAs("user-1");
+      (repositories.insertStrategy as jest.Mock).mockResolvedValue({
+        id: "cfg-2", strategy_type: "beginner_reversal", name: "test",
+      });
+      mockInsertStrategyVersion.mockResolvedValue({ id: "ver-1", versionNumber: 1 });
+      const body = { strategy_type: "beginner_reversal", name: "test", config: { symbols: ["SPY"] } };
+
+      definition.status = "planned";
+      const refused = await request(app).post("/api/strategies/configs").set("Authorization", "Bearer valid").send(body);
+      expect(refused.status).toBe(400);
+      expect(repositories.insertStrategy).not.toHaveBeenCalled();
+
+      definition.status = "ready";
+      const accepted = await request(app).post("/api/strategies/configs").set("Authorization", "Bearer valid").send(body);
+      expect(accepted.status).toBe(201);
+    });
+
+    test("restoring a persisted run still resolves the factory for a non-ready type", () => {
+      definition.status = "retired";
+      expect(STRATEGY_FACTORY.beginner_reversal).toBeInstanceOf(Function);
+      expect(strategyDefinition("beginner_reversal")?.actions.startTrading.allowed).toBe(false);
+    });
+  });
+
+  // A mistake is reported to its author when the config is saved, not at start.
+  describe("save-time config validation", () => {
+    const badMinuteReversal = { symbols: ["NVDA"], qtyPerTrade: 0 };
+
+    test("POST /configs rejects an unrunnable config with the strategy's message", async () => {
+      signedInAs();
+      const res = await request(app)
+        .post("/api/strategies/configs")
+        .set("Authorization", "Bearer valid")
+        .send({ strategy_type: "minute_reversal", name: "bad", config: badMinuteReversal });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/^Invalid configuration: .*qtyPerTrade must be a positive whole number/);
+      expect(repositories.insertStrategy).not.toHaveBeenCalled();
+    });
+
+    test("POST /configs still accepts a valid config", async () => {
+      signedInAs("user-1");
+      (repositories.insertStrategy as jest.Mock).mockResolvedValue({ id: "cfg-3", strategy_type: "minute_reversal", name: "ok" });
+      mockInsertStrategyVersion.mockResolvedValue({ id: "ver-1", versionNumber: 1 });
+      const res = await request(app)
+        .post("/api/strategies/configs")
+        .set("Authorization", "Bearer valid")
+        .send({ strategy_type: "minute_reversal", name: "ok", config: { symbols: ["NVDA"], qtyPerTrade: 1, maxPositionQty: 2 } });
+      expect(res.status).toBe(201);
+    });
+
+    test("PUT /configs/:id rejects an unrunnable edit and saves no version", async () => {
+      signedInAs("user-1");
+      mockGetStrategyById.mockResolvedValue({
+        id: "cfg-1", name: "old", strategy_type: "minute_reversal", config: {}, owner_id: "user-1",
+      });
+      const res = await request(app)
+        .put("/api/strategies/configs/cfg-1")
+        .set("Authorization", "Bearer valid")
+        .send({ name: "Updated", config: badMinuteReversal });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("Invalid configuration");
+      expect(review.saveStrategyVersion).not.toHaveBeenCalled();
+    });
+
+    test("a strategy with no validate hook (pairs trading) is saved as before", async () => {
+      signedInAs("user-1");
+      mockGetStrategyById.mockResolvedValue({
+        id: "cfg-1", name: "old", strategy_type: "pairs_trading", config: {}, owner_id: "user-1",
+      });
+      const res = await request(app)
+        .put("/api/strategies/configs/cfg-1")
+        .set("Authorization", "Bearer valid")
+        .send({ name: "Updated", config: {} });
+      expect(res.status).toBe(200);
+      // Each saved version records the algorithm it was written for.
+      expect(review.saveStrategyVersion).toHaveBeenCalledWith(
+        expect.objectContaining({ strategyId: "cfg-1", algorithmVersion: PairsStrategy.VERSION }),
+      );
+    });
+  });
+
   describe("GET /api/strategies/configs/defaults/:type", () => {
     test("returns 200 with default config for pairs_trading", async () => {
       const res = await request(app).get("/api/strategies/configs/defaults/pairs_trading").set("Authorization", "Bearer valid");
@@ -208,6 +368,7 @@ describe("Strategies HTTP API", () => {
           strategyId: "cfg-1",
           changeSummary: "Initial version",
           createdBy: "user-1",
+          algorithmVersion: PairsStrategy.VERSION,
         }),
       );
     });

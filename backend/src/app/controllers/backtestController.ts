@@ -36,8 +36,10 @@ import {
   deleteJobArtifacts,
 } from "../../adapters/supabase/backtestJobRepository";
 import { BacktestStreamManager } from "../../core/backtest/backtestStreamManager";
+import { BACKTEST_ENGINE_VERSION } from "../../core/backtest/backtestEngine";
+import { executionForConfig } from "../../core/execution/quoteFillModel";
 import { getStrategyVersionById } from "../../adapters/supabase/reviewRepositories";
-import { PairsStrategy } from "../../strategies/pairs/pairsStrategy";
+import { STRATEGY_DEFINITIONS, configProblem } from "../../config/strategyDefaults";
 import { logger } from "../../utils/logger";
 import { newId } from "../../utils/ids";
 import type { BacktestConfig } from "../../types/backtest";
@@ -203,6 +205,11 @@ export async function runBacktest(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: `Backtesting is not supported for strategy type "${body.strategyConfig.type}"` });
     return;
   }
+  const problem = configProblem(body.strategyConfig.type, body.strategyConfig as unknown as Record<string, unknown>);
+  if (problem) {
+    res.status(400).json({ error: `Invalid configuration: ${problem}` });
+    return;
+  }
   if (body.strategyVersionId) {
     if (!body.strategyId) {
       res.status(400).json({ error: "strategyId is required when strategyVersionId is provided" });
@@ -238,10 +245,18 @@ export async function runBacktest(req: Request, res: Response): Promise<void> {
     }
   }
 
+  let execution: BacktestConfig["execution"];
+  try {
+    execution = executionForConfig(body.execution);
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+    return;
+  }
+
   // Resolve the algorithm version from the strategy class so the config key is
   // stable across requests regardless of what the frontend sends.
   const resolvedStrategyVersion: number | undefined =
-    body.strategyConfig.type === "pairs_trading" ? PairsStrategy.VERSION : body.strategyVersion;
+    STRATEGY_DEFINITIONS[body.strategyConfig.type].algorithmVersion;
 
   const config: BacktestConfig = {
     ...body,
@@ -251,6 +266,9 @@ export async function runBacktest(req: Request, res: Response): Promise<void> {
     commissionPerShare: body.commissionPerShare ?? 0.005,
     dataGranularity: body.dataGranularity ?? "bar",
     strategyVersion: resolvedStrategyVersion,
+    // Always this build's semantics, never the client's: it is part of the dedup key.
+    engineVersion: BACKTEST_ENGINE_VERSION,
+    execution,
   };
   const configKey = backtestConfigKey(config);
 

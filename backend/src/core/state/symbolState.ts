@@ -11,8 +11,9 @@
 
 import { RollingTimeWindow } from "./rollingWindow";
 import { DEFAULT_WINDOWS } from "../../config/defaults";
+import { barEndMs } from "../../utils/time";
 import type { Quote, Trade, Bar } from "../../types/market";
-import type { Symbol } from "../../types/common";
+import type { EpochMs, Symbol } from "../../types/common";
 
 // ------------------------------------------------------------------
 // Per-symbol state shape
@@ -28,6 +29,11 @@ export interface SymbolState {
   latestBid: number | null;
   latestAsk: number | null;
   latestMid: number | null;
+  /**
+   * When latestMid became known: the quote's time, or a bar's end (not its
+   * start) when a bar close set it. Staleness checks measure age from here.
+   */
+  latestMidTs: EpochMs | null;
   latestSpread: number | null;
 
   // Rolling windows
@@ -89,6 +95,7 @@ export class SymbolStateManager {
     state.latestBid = quote.bidPrice;
     state.latestAsk = quote.askPrice;
     state.latestMid = quote.midPrice;
+    state.latestMidTs = quote.ts;
     state.latestSpread = quote.spread;
     state.quoteCount++;
     state.quotesWindow.push({ ts: quote.ts, value: quote });
@@ -115,8 +122,14 @@ export class SymbolStateManager {
     const state = this.getOrCreate(bar.symbol);
     state.latestBar = bar;
     state.barCount++;
-    // Fallback: update latestMid so quote-based strategies can run on bars
-    state.latestMid = bar.close;
+    // Fallback: a bar close stands in for the mid so quote-based code can run
+    // on bars — but only when nothing fresher is known. A quote received after
+    // the bar completed is the better current price.
+    const endTs = barEndMs(bar);
+    if (state.latestMidTs === null || endTs >= state.latestMidTs) {
+      state.latestMid = bar.close;
+      state.latestMidTs = endTs;
+    }
   }
 
   /**
@@ -139,6 +152,7 @@ export class SymbolStateManager {
       latestBid: null,
       latestAsk: null,
       latestMid: null,
+      latestMidTs: null,
       latestSpread: null,
       quotesWindow: new RollingTimeWindow(DEFAULT_WINDOWS.medium),
       tradesWindow: new RollingTimeWindow(DEFAULT_WINDOWS.medium),

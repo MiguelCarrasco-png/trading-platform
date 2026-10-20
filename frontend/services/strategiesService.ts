@@ -61,6 +61,14 @@ export async function fetchStrategies(): Promise<StoredStrategy[]> {
 }
 
 /**
+ * Fetches visible strategy types with server-derived operation eligibility.
+ * @returns StrategyDefinition per type, with form params where the strategy has any
+ */
+export async function fetchStrategyTypes(): Promise<StrategyDefinition[]> {
+  return apiGet<StrategyDefinition[]>("/strategies/configs/types");
+}
+
+/**
  * Fetches the hardcoded default config for a strategy type.
  * @param type - Strategy type string (e.g. "pairs_trading")
  * @returns StrategyDefinition with label, description, version, and defaultConfig

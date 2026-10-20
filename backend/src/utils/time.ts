@@ -106,6 +106,21 @@ export function isoToMs(iso: ISOTimestamp): EpochMs {
 }
 
 /**
+ * Nanoseconds since the epoch for an RFC 3339 timestamp such as Alpaca's
+ * "2026-10-07T13:31:00.123456789Z". Use it to order ticks: Date.parse drops
+ * everything past the millisecond, and the strings themselves do not sort,
+ * since trailing fraction digits may be trimmed ("...:00Z" vs "...:00.1Z").
+ * @param t - RFC 3339 timestamp
+ * @returns Nanoseconds since the Unix epoch
+ */
+export function rfc3339ToNanos(t: ISOTimestamp): bigint {
+  const match = /^(.+T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/.exec(t);
+  if (!match) return BigInt(Date.parse(t)) * 1_000_000n;
+  const wholeSecondsMs = Date.parse(match[1] + match[3]);
+  return BigInt(wholeSecondsMs) * 1_000_000n + BigInt((match[2] ?? "").padEnd(9, "0"));
+}
+
+/**
  * Converts a Unix millisecond timestamp to an ISO 8601 string.
  * @param ms - Unix timestamp in milliseconds
  * @returns ISO 8601 string
@@ -146,22 +161,45 @@ export function formatTs(ms: EpochMs): string {
   return new Date(ms).toLocaleString();
 }
 
+/** Unit lengths for the short forms live bars use ("1m") and Alpaca's REST names ("1Min"). */
+const TIMEFRAME_UNIT_MS = new Map<string, number>([
+  ["s", 1_000],
+  ["m", 60_000], ["Min", 60_000],
+  ["h", 3_600_000], ["Hour", 3_600_000],
+  ["d", 86_400_000], ["Day", 86_400_000],
+]);
+
 /**
- * Parses a timeframe string (e.g. "5m", "1h", "1d") into milliseconds.
+ * Parses a timeframe string (e.g. "5m", "1h", "1d", "1Min", "1Hour") into milliseconds.
  * @param timeframe - Timeframe string
  * @returns Duration in milliseconds
  */
 export function timeframeToMs(timeframe: string): number {
-  const unit = timeframe.slice(-1);
-  const value = parseInt(timeframe.slice(0, -1), 10);
-  switch (unit) {
-    case "s": return value * 1_000;
-    case "m": return value * 60_000;
-    case "h": return value * 3_600_000;
-    case "d": return value * 86_400_000;
-    default:
-      throw new Error(`Unknown timeframe unit: "${unit}" in "${timeframe}"`);
+  const match = /^(\d+)([A-Za-z]+)$/.exec(timeframe);
+  const unit = match?.[2] ?? timeframe;
+  const unitMs = TIMEFRAME_UNIT_MS.get(unit);
+  if (!match || unitMs === undefined) {
+    throw new Error(`Unknown timeframe unit: "${unit}" in "${timeframe}"`);
   }
+  return Number(match[1]) * unitMs;
+}
+
+/**
+ * When a bar's interval closed: the earliest moment its OHLCV could be known.
+ * Bars are stamped with their interval's start, so the 10:00 minute bar is
+ * only available at 10:01. Every bar in this system is a minute bar, so an
+ * unrecognised timeframe is treated as one minute rather than failing a run.
+ * @param bar - Any bar-shaped value
+ * @returns Unix ms at which the bar completed
+ */
+export function barEndMs(bar: { ts: EpochMs; timeframe: string }): EpochMs {
+  let durationMs = 60_000;
+  try {
+    durationMs = timeframeToMs(bar.timeframe);
+  } catch {
+    // keep the one-minute default
+  }
+  return bar.ts + durationMs;
 }
 
 /**

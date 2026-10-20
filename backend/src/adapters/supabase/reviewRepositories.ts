@@ -90,6 +90,7 @@ function mapVersion(row: Record<string, unknown>): StrategyVersion {
     createdBy: (row.created_by as UUID | null) ?? null,
     createdAt: ms(row.created_at),
     createdByName: author?.display_name ?? null,
+    algorithmVersion: (row.algorithm_version as number | null | undefined) ?? null,
     attachedToProposalId: (row.attached_to_proposal_id as UUID | null | undefined) ?? undefined,
   };
 }
@@ -101,6 +102,8 @@ export async function saveStrategyVersion(input: {
   config: Record<string, unknown>;
   changeSummary: string;
   createdBy: UUID;
+  /** The strategy class VERSION this config was saved under; null/omitted when unknown. */
+  algorithmVersion?: number | null;
 }): Promise<StrategyVersion> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase.rpc("save_strategy_version", {
@@ -109,6 +112,7 @@ export async function saveStrategyVersion(input: {
     p_config: input.config,
     p_change_summary: input.changeSummary,
     p_created_by: input.createdBy,
+    ...(input.algorithmVersion != null ? { p_algorithm_version: input.algorithmVersion } : {}),
   });
   if (error || !data) {
     logger.error("saveStrategyVersion failed", { error: error?.message });
@@ -127,6 +131,8 @@ export async function insertStrategyVersion(input: {
   config: Record<string, unknown>;
   changeSummary?: string | null;
   createdBy: UUID;
+  /** The strategy class VERSION this config was saved under; null/omitted when unknown. */
+  algorithmVersion?: number | null;
 }): Promise<StrategyVersion> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
@@ -136,6 +142,7 @@ export async function insertStrategyVersion(input: {
       config: input.config,
       change_summary: input.changeSummary ?? null,
       created_by: input.createdBy,
+      algorithm_version: input.algorithmVersion ?? null,
     })
     .select("*")
     .single();

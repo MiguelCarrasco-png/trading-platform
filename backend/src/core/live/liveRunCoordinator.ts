@@ -102,6 +102,20 @@ export class LiveRunCoordinator {
   activate(runId: string, strategy: IStrategy, expiresAt?: number | null): void {
     this.deps.registry.registerStrategy(strategy, runId);
     const symbols = strategy.config.symbols ?? [];
+    // What is actually running, so a member can confirm it matches what they meant to launch.
+    logger.info("LiveRunCoordinator: run activated", {
+      runId,
+      name: strategy.config.name,
+      type: strategy.type,
+      algorithmVersion: strategy.version,
+      symbols,
+      decidesOn: strategy.triggers ?? "every quote, trade and bar",
+    });
+    if (symbols.length === 0) {
+      logger.warn("LiveRunCoordinator: run has no symbols, so it will never receive market data", {
+        runId, name: strategy.config.name,
+      });
+    }
     if (symbols.length > 0) this.deps.subscribe(symbols);
     this.held.add(runId);
     if (expiresAt) this.expirations.set(runId, expiresAt);

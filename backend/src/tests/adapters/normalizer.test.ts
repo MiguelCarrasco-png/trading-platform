@@ -23,6 +23,12 @@ describe('normalizeQuote', () => {
     expect(normalizeQuote(raw).symbol).toBe('SPY');
   });
 
+  it("maps a consolidated quote's bid and ask venues", () => {
+    const q = normalizeQuote({ ...raw, bx: 'V', ax: 'Q' });
+    expect(q.bidExchange).toBe('V');
+    expect(q.askExchange).toBe('Q');
+  });
+
   it('maps bid and ask prices', () => {
     const q = normalizeQuote(raw);
     expect(q.bidPrice).toBe(100.0);

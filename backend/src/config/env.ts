@@ -55,6 +55,16 @@ function marketDataInvalidPolicy(): "pass" | "quarantine" {
   throw new Error(`MARKET_DATA_INVALID_POLICY must be pass or quarantine, got: "${raw}"`);
 }
 
+/**
+ * How a sim runtime streaming live data prices orders: "quote" against the
+ * live quotes and trades (the backtest's quote model), "bar" on the next bar.
+ */
+function simExecutionModel(): "quote" | "bar" {
+  const raw = optional("SIM_EXECUTION_MODEL", "quote");
+  if (raw === "quote" || raw === "bar") return raw;
+  throw new Error(`SIM_EXECUTION_MODEL must be quote or bar, got: "${raw}"`);
+}
+
 function executionTarget(): ExecutionTarget {
   const raw = optional("EXECUTION_TARGET", "sim");
   if (raw === "sim" || raw === "alpaca-paper" || raw === "alpaca-live") return raw;
@@ -63,6 +73,15 @@ function executionTarget(): ExecutionTarget {
 
 const alpacaApiKey = optional("ALPACA_API_KEY", "");
 const alpacaApiSecret = optional("ALPACA_API_SECRET", "");
+
+function strategyPolicyProfile(): "development" | "shared" {
+  const value = optional("STRATEGY_POLICY_PROFILE", "shared");
+  if (value !== "development" && value !== "shared") throw new Error("STRATEGY_POLICY_PROFILE must be development or shared");
+  if (value === "development" && optional("APP_RUNTIME_ORIGIN", "local") === "aws-prod") {
+    throw new Error("aws-prod requires STRATEGY_POLICY_PROFILE=shared");
+  }
+  return value;
+}
 
 export const env = {
   // Server
@@ -76,6 +95,7 @@ export const env = {
 
   // Execution
   executionTarget: executionTarget(),
+  strategyPolicyProfile: strategyPolicyProfile(),
   /**
    * Account number this runtime must be trading. Mandatory on the AWS origin;
    * optional for a member's own paper account.
@@ -95,6 +115,14 @@ export const env = {
   marketDataInvalidPolicy: marketDataInvalidPolicy(),
   alpacaPaperStreamUrl: optional("ALPACA_PAPER_STREAM_URL", "wss://paper-api.alpaca.markets/stream"),
   alpacaLiveStreamUrl: optional("ALPACA_LIVE_STREAM_URL", "wss://api.alpaca.markets/stream"),
+  /**
+   * Historical market-data requests per minute this process may make. Alpaca's
+   * free plan allows 200 across everything on the key; the default leaves room
+   * for the bar loader.
+   */
+  alpacaDataRequestsPerMinute: optionalNumber("ALPACA_DATA_REQUESTS_PER_MINUTE", 190),
+  /** Local cache of historical quotes and trades (relative paths resolve from the process's cwd). */
+  marketDataDir: optional("MARKET_DATA_DIR", ".local/marketdata"),
 
   // Supabase
   supabaseUrl: requireEnv("SUPABASE_URL"),
@@ -118,6 +146,10 @@ export const env = {
   runLeaseSeconds: optionalNumber("RUN_LEASE_SECONDS", 90),
   /** evaluate() errors in a row before a live strategy is auto-disabled. */
   maxConsecutiveStrategyErrors: optionalNumber("MAX_CONSECUTIVE_STRATEGY_ERRORS", 5),
+  /** Seconds without data for a strategy's symbol (market open) before the runner warns about it. */
+  diagnosticsNoDataSeconds: optionalNumber("DIAGNOSTICS_NO_DATA_SECONDS", 300),
+  /** A repeated blocked or rejected order is logged once per this many seconds, with a count of the rest. */
+  diagnosticsLogWindowSeconds: optionalNumber("DIAGNOSTICS_LOG_WINDOW_SECONDS", 60),
   /** Maximum share of the paper book available to a self-service sandbox run. */
   sandboxMaxCapitalPct: optionalNumber("SANDBOX_MAX_CAPITAL_PCT", 0.05),
   /** Maximum concurrently running paper sandboxes owned by one member. */
@@ -135,6 +167,12 @@ export const env = {
   replayFrom: optional("REPLAY_FROM", ""),
   replayTo: optional("REPLAY_TO", ""),
   replaySpeed: optionalNumber("REPLAY_SPEED", 1),
+
+  // Sim fills. With live data a sim runtime prices orders on the stream's
+  // quotes and trades, assuming SIM_LATENCY_MS from decision to market; a
+  // replay has bars only and fills on the next bar.
+  simExecutionModel: simExecutionModel(),
+  simLatencyMs: optionalNumber("SIM_LATENCY_MS", 250),
 
   // Latency instrumentation of a trading runtime (docs/guides/latency-benchmark.md).
   // Off by default; when on it only observes — no trading decision changes.

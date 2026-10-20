@@ -241,11 +241,12 @@ export function RunsTable({ runs }: { runs: RunSummary[] }) {
 const EVENT_TONE: Record<string, string> = {
   STARTED: "text-green-600", ADOPTED: "text-blue-600", LEASE_LOST: "text-amber-600", ERROR: "text-red-600",
   RECOVERED: "text-green-600", AUTO_DISABLED: "text-red-600", EXPIRED: "text-zinc-500", STOPPED: "text-zinc-500",
+  BLOCKED: "text-amber-600", NO_DATA: "text-amber-600", DATA_RESUMED: "text-green-600",
 };
 
 export function EventsTimeline({ events }: { events: RunnerEvent[] }) {
   return (
-    <Section title="Runner events" hint="Which runner held the run, and anything that interrupted it.">
+    <Section title="Runner events" hint="Which runner held the run, and anything that interrupted it: errors, blocked orders, missing market data.">
       {events.length === 0 ? <Empty>No events recorded.</Empty> : (
         <ol className="space-y-2 text-sm">
           {events.map((e, i) => (

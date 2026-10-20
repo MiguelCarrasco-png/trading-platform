@@ -38,6 +38,21 @@ export interface SystemStatus {
   ts: string;
 }
 
+/**
+ * How a backtest prices its orders (backend core/execution/quoteFillModel.ts).
+ * Fields left out take the server's defaults.
+ */
+export interface ExecutionSettings {
+  /** "bar": the next bar's open with a synthetic spread. "quote": the real bid/ask when the order reaches the market. */
+  model: "bar" | "quote";
+  /** Decision-to-market delay assumed for every order (ms). */
+  latencyMs?: number;
+  quoteLookbackMs?: number;
+  maxQuoteWaitMs?: number;
+  extraSlippageBps?: number;
+  feed?: "sip" | "iex";
+}
+
 export interface BacktestConfig {
   id?: string;
   name: string;
@@ -64,6 +79,8 @@ export interface BacktestConfig {
   benchmarkCurve?: { ts: number; value: number }[];
   /** Fill model override; merged with server defaults when supplied */
   fillModel?: Record<string, unknown>;
+  /** How orders are priced; omitted means the bar model (next bar's open). */
+  execution?: ExecutionSettings;
   /** Risk configuration override merged with server defaults for this run */
   riskConfig?: {
     gapBufferBps?: number;

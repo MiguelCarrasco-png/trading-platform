@@ -9,6 +9,7 @@ import type { StrategyRunStats } from "./analytics";
 export type StrategyType =
   | "pairs_trading"
   | "minute_reversal"
+  | "beginner_reversal"
   | "momentum"
   | "arbitrage"
   | "market_making"
@@ -70,14 +71,39 @@ export interface StoredStrategy {
   updated_at: string;
 }
 
-/** Hardcoded type definition returned by GET /strategies/configs/defaults/:type */
+/** One editable field the generic strategy form draws from the backend's spec. */
+export interface ParamSpec {
+  key: string;
+  label: string;
+  /** "symbols" is a comma-separated list stored as a string[]. */
+  kind: "number" | "text" | "symbols" | "boolean";
+  min?: number;
+  max?: number;
+  step?: number;
+  hint?: string;
+}
+
+/** Lifecycle; server-provided actions determine eligibility in this runtime. */
+export type StrategyStatus = "planned" | "experimental" | "ready" | "retired";
+
+/** Hardcoded type definition returned by GET /strategies/configs/defaults/:type and /configs/types */
 export interface StrategyDefinition {
   type: StrategyType;
   label: string;
   description: string;
+  status?: StrategyStatus;
+  hidden?: boolean;
+  backtestable?: boolean;
+  actions?: {
+    save: { allowed: boolean; reason?: string };
+    backtest: { allowed: boolean; reason?: string };
+    startTrading: { allowed: boolean; reason?: string };
+  };
   /** Current algorithm version sourced from the strategy class constant. */
   algorithmVersion: number;
   defaultConfig: Record<string, unknown>;
+  /** Fields for the generic form; absent when the strategy has a bespoke form. */
+  params?: ParamSpec[];
 }
 
 export interface RiskBudget {

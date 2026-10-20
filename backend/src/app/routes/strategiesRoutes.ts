@@ -16,6 +16,7 @@ import {
   stopStrategyRun,
   listStrategies,
   getStrategyDefaults,
+  listStrategyTypes,
   createStrategy,
   updateStrategyConfig,
   deleteStrategyConfig,
@@ -32,6 +33,9 @@ const router = Router();
 
 /** GET /api/strategies/configs — list all saved strategy configs */
 router.get("/configs", requireAuth, listStrategies);
+
+/** GET /api/strategies/configs/types — launchable (status "ready") strategy types with form specs */
+router.get("/configs/types", requireAuth, listStrategyTypes);
 
 /** GET /api/strategies/configs/defaults/:type — hardcoded type defaults */
 router.get("/configs/defaults/:type", requireAuth, getStrategyDefaults);

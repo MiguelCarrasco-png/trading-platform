@@ -30,7 +30,9 @@ import { newId } from "../../utils/ids";
 import type { IStrategy } from "../../strategies/base/strategy";
 import type { EngineProbe } from "../telemetry/latencyProbe";
 import type { ExecutionMode, UUID } from "../../types/common";
-import type { BaseStrategyConfig } from "../../types/strategy";
+import type { BaseStrategyConfig, SignalOrder, StrategySignal } from "../../types/strategy";
+import type { OrderIntent } from "../../types/orders";
+import type { MarketEventKind } from "../../types/market";
 import type {
   QuoteReceivedEvent,
   TradeReceivedEvent,
@@ -57,6 +59,30 @@ export interface OrchestratorOptions {
    * are timed and correlated with the market event's trace.
    */
   probe?: EngineProbe;
+}
+
+const ORDER_TYPES = new Set<SignalOrder["type"]>(["market", "limit", "stop", "stop_limit"]);
+
+/**
+ * Order fields for a signal's own leg: market, immediate-or-cancel, unless the
+ * signal asks otherwise. Null when the request is unusable — an unknown type,
+ * or a limit/stop price that is missing or not a positive number.
+ */
+function primaryOrderFields(
+  order: SignalOrder | undefined,
+): Pick<OrderIntent, "orderType" | "limitPrice" | "stopPrice" | "timeInForce"> | null {
+  if (!order) return { orderType: "market", timeInForce: "ioc" };
+  const usable = (price: number | undefined) => price !== undefined && Number.isFinite(price) && price > 0;
+  const hasLimit = order.type === "limit" || order.type === "stop_limit";
+  const hasStop = order.type === "stop" || order.type === "stop_limit";
+  if (!ORDER_TYPES.has(order.type)) return null;
+  if ((hasLimit && !usable(order.limitPrice)) || (hasStop && !usable(order.stopPrice))) return null;
+  return {
+    orderType: order.type,
+    ...(hasLimit ? { limitPrice: order.limitPrice } : {}),
+    ...(hasStop ? { stopPrice: order.stopPrice } : {}),
+    timeInForce: order.timeInForce ?? (order.type === "market" ? "ioc" : "day"),
+  };
 }
 
 export class Orchestrator {
@@ -153,6 +179,18 @@ export class Orchestrator {
   /** Returns true if a strategy with the given ID is currently registered. */
   hasStrategy(strategyId: string): boolean {
     return this.strategies.has(strategyId);
+  }
+
+  /**
+   * Every registered strategy with its registry key (the strategy_runs id for a
+   * launched run). Read-only, for diagnostics; not used on the event path.
+   */
+  registeredStrategies(): Array<{ key: string; runId?: string; strategy: IStrategy }> {
+    return [...this.strategies.entries()].map(([key, strategy]) => ({
+      key,
+      strategy,
+      ...(this._runKeys.has(key) ? { runId: key } : {}),
+    }));
   }
 
   /** Returns true if any registered strategy was launched from the given config ID. */
@@ -267,7 +305,7 @@ export class Orchestrator {
     this.portfolioState.updatePrice(event.payload.symbol, event.payload.midPrice);
     this._proactivePortfolioCheck(event.mode);
     if (probe) probe.span(event.trace, "state", start, probe.now());
-    this._evaluateStrategies(event.payload.symbol, event.trace);
+    this._evaluateStrategies(event.payload.symbol, "quote", event.trace);
   }
 
   private _onTrade(event: TradeReceivedEvent): void {
@@ -277,7 +315,7 @@ export class Orchestrator {
     this.portfolioState.updatePrice(event.payload.symbol, event.payload.price);
     this._proactivePortfolioCheck(event.mode);
     if (probe) probe.span(event.trace, "state", start, probe.now());
-    this._evaluateStrategies(event.payload.symbol, event.trace);
+    this._evaluateStrategies(event.payload.symbol, "trade", event.trace);
   }
 
   private _onBar(event: BarReceivedEvent): void {
@@ -289,7 +327,7 @@ export class Orchestrator {
     this.portfolioState.updatePrice(event.payload.symbol, event.payload.close);
     this._proactivePortfolioCheck(event.mode);
     if (probe) probe.span(event.trace, "state", start, probe.now());
-    this._evaluateStrategies(event.payload.symbol, event.trace);
+    this._evaluateStrategies(event.payload.symbol, "bar", event.trace);
   }
 
   /**
@@ -317,7 +355,7 @@ export class Orchestrator {
     }
   }
 
-  private _evaluateStrategies(symbol: string, trace?: EventTrace): void {
+  private _evaluateStrategies(symbol: string, kind: MarketEventKind, trace?: EventTrace): void {
     if (this.riskEngine.isKillSwitchActive()) return;
     const probe = this.options.probe?.stageDetail ? this.options.probe : undefined;
     // Registration (or deregistration) during this pass rebuilds the order for
@@ -325,6 +363,8 @@ export class Orchestrator {
     const ordered = (this._evaluationOrder ??= [...this.strategies.entries()]
       .sort(([, a], [, b]) => getStrategyPriority(b.type) - getStrategyPriority(a.type)));
     for (const [key, strategy] of ordered) {
+      // A strategy is only called for the event kinds it triggers on.
+      if (strategy.triggers && !strategy.triggers.includes(kind)) continue;
       if (!strategy.config.symbols.includes(symbol)) continue;
       // An earlier strategy's handler in this same pass may have deregistered it.
       if (!this.strategies.has(key)) continue;
@@ -410,6 +450,7 @@ export class Orchestrator {
     };
 
     const trace: EventTrace | undefined = event.trace;
+    if (signal.cancelWorkingOrders) this._cancelWorkingOrders(signal, origin.runId);
     if (signal.meta?.kind === "maker_quotes") {
       this._onMakerQuoteSignal(signal, event.mode, origin, trace);
       return;
@@ -485,9 +526,17 @@ export class Orchestrator {
     else if (signal.direction === "short" || signal.direction === "close_long") side = "sell";
     else return [];
 
+    const orderFields = primaryOrderFields(signal.order);
+    if (!orderFields) {
+      logger.warn("Orchestrator: dropping signal — its order request is incomplete or unknown", {
+        strategyId: signal.strategyId, symbol: signal.symbol, order: signal.order,
+      });
+      return [];
+    }
+
     const primary: import("../../types/orders").OrderIntent = {
       id: newId(), strategyId: signal.strategyId, symbol: signal.symbol,
-      side, qty: signal.qty, orderType: "market", timeInForce: "ioc",
+      side, qty: signal.qty, ...orderFields,
       reason: signal.triggerLabel, ts: nowMs(), meta: signal.meta,
     };
 
@@ -521,6 +570,24 @@ export class Orchestrator {
   }
 
   /**
+   * Cancels the emitting strategy's open orders on the signal's symbol and its
+   * counterpart (only the emitting run's, when the signal came from a run).
+   * Simulated cancels take effect at once; at a broker a cancel is a request
+   * and a fill can still win the race.
+   */
+  private _cancelWorkingOrders(signal: StrategySignal, runId?: UUID): void {
+    const symbols = new Set<string>([signal.symbol]);
+    const counterpart = signal.meta?.counterpartSymbol;
+    if (typeof counterpart === "string") symbols.add(counterpart);
+    for (const order of this.orderState.getOpenOrdersByStrategy(signal.strategyId)) {
+      if (!symbols.has(order.symbol) || !order.brokerOrderId) continue;
+      if (runId && order.runId !== runId) continue;
+      this.executionEngine.cancel(order.brokerOrderId).catch((err) =>
+        logger.error("Orchestrator: canceling a working order failed", { orderId: order.id, error: String(err) }));
+    }
+  }
+
+  /**
    * Runs a side-effect-free risk pre-flight check on every leg of a multi-leg signal.
    * Returns the first failure (intent + check name + reason) so the caller can emit a
    * RISK_REJECTED event and drop the whole group before any ORDER_INTENT_CREATED fires.
@@ -533,8 +600,7 @@ export class Orchestrator {
     for (const leg of legs) {
       const symState = this.symbolState.get(leg.symbol);
       const mid = symState?.latestMid ?? symState?.latestBar?.close ?? undefined;
-      const quoteTs = symState?.latestQuote?.ts ?? symState?.latestBar?.ts ?? undefined;
-      const result = this.riskEngine.preflightCheck(leg, portfolio, mid, quoteTs);
+      const result = this.riskEngine.preflightCheck(leg, portfolio, mid, symState?.latestMidTs ?? undefined);
       if (!result.passed) {
         return {
           intent: leg,
@@ -620,9 +686,10 @@ export class Orchestrator {
       : event.payload;
     const portfolio = this.portfolioState.getSnapshot();
 
-    // Stage 1: signal-time risk checks (kill switch, cooldown, position/cash/concentration)
-    const quoteTs = symState?.latestQuote?.ts ?? symState?.latestBar?.ts ?? undefined;
-    const riskResult = this.riskEngine.check(intent, portfolio, mid ?? undefined, quoteTs);
+    // Stage 1: signal-time risk checks (kill switch, cooldown, position/cash/concentration).
+    // Staleness is measured from when the reference price became known — a bar
+    // close is known at the bar's end, not its start.
+    const riskResult = this.riskEngine.check(intent, portfolio, mid ?? undefined, symState?.latestMidTs ?? undefined);
     if (!riskResult.passed) {
       this.eventBus.publish({
         id: newId(), type: "RISK_REJECTED", ts: nowMs(), mode: this.mode,

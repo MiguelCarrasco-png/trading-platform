@@ -18,6 +18,10 @@
  * The strategy emits one signal per leg per trigger. The execution layer
  * handles routing both legs into actual orders.
  *
+ * Decision clock: completed 1-minute bars only, one observation per minute in
+ * which both legs printed a bar, priced at each leg's close. Live trading and
+ * backtests therefore sample the spread identically.
+ *
  * Inputs:  EvaluationContext with symbol/portfolio/order state.
  * Outputs: StrategySignal with PairsSignalMeta, or null (no action this tick).
  */
@@ -27,10 +31,10 @@ import { RollingTimeWindow, RollingNumericWindow } from "../../core/state/rollin
 import { computeZScoreFromStats } from "../../services/indicators/zscore";
 import { computeEngleGranger } from "../../services/indicators/cointegration";
 import { logger } from "../../utils/logger";
-import { nowMs } from "../../utils/time";
+import { nowMs, barEndMs } from "../../utils/time";
 import type { EvaluationContext } from "../base/strategy";
 import type { StrategySignal, StrategyType } from "../../types/strategy";
-import type { Bar } from "../../types/market";
+import type { Bar, MarketEventKind } from "../../types/market";
 import { DEFAULT_COINT_HYSTERESIS } from "./pairsConfig";
 import type {
   PairsStrategyConfig,
@@ -42,8 +46,11 @@ export class PairsStrategy extends BaseStrategy {
   readonly type: StrategyType = "pairs_trading";
   // v3: replaced R² gate with Engle-Granger cointegration test; fixed entry-above-stop and state-before-qty bugs
   // v4: added hysteresis deadband around the cointegration threshold to stop state flapping
-  static readonly VERSION = 4;
+  // v5: scores completed bars only — one observation per minute from both legs' closes.
+  //     Live runs previously also added an observation on every quote and trade.
+  static readonly VERSION = 5;
   readonly version = PairsStrategy.VERSION;
+  readonly triggers: readonly MarketEventKind[] = ["bar"];
 
   private readonly state: PairsInternalState;
 
@@ -52,7 +59,7 @@ export class PairsStrategy extends BaseStrategy {
   private readonly _debug = {
     evaluateCalls: 0,
     missingLegData: 0,
-    missingPrices: 0,
+    unpairedBars: 0,
     cooldownSuppressed: 0,
     insufficientObservations: 0,
     zScoreNull: 0,
@@ -71,41 +78,36 @@ export class PairsStrategy extends BaseStrategy {
   }
 
   /**
-   * Called on every quote/bar event for a symbol in this strategy's universe.
-   * Computes the spread and z-score, then emits signals if thresholds are crossed.
+   * Called on each completed bar of either leg. Scores a minute once both legs'
+   * bars for it are in — live they arrive in separate messages, in either
+   * order — computes the spread and z-score, then emits signals if thresholds
+   * are crossed.
    * @param context - EvaluationContext from the Orchestrator
    * @returns StrategySignal or null
    */
   evaluate(context: EvaluationContext): StrategySignal | null {
     if (!this.isActive || !this.pairsConfig.enabled) return null;
-    if (context.symbol !== this.pairsConfig.leg1Symbol) return null;
+    const { leg1Symbol, leg2Symbol } = this.pairsConfig;
+    if (context.symbol !== leg1Symbol && context.symbol !== leg2Symbol) return null;
     if (this._debugEnabled) this._debug.evaluateCalls++;
 
-    const { symbolState } = context;
-    const { leg1Symbol, leg2Symbol } = this.pairsConfig;
-
-    // Both legs must have recent data
-    const s1 = symbolState.get(leg1Symbol);
-    const s2 = symbolState.get(leg2Symbol);
-    if (!s1 || !s2) {
+    const bar1 = context.symbolState.get(leg1Symbol)?.latestBar;
+    const bar2 = context.symbolState.get(leg2Symbol)?.latestBar;
+    if (!bar1 || !bar2) {
       if (this._debugEnabled) this._debug.missingLegData++;
       return null;
     }
 
-    const price1 = this.pairsConfig.priceSource === "mid"
-      ? s1.latestMid
-      : s1.latestTrade?.price ?? null;
-    const price2 = this.pairsConfig.priceSource === "mid"
-      ? s2.latestMid
-      : s2.latestTrade?.price ?? null;
-
-    if (price1 === null || price2 === null) {
-      if (this._debugEnabled) this._debug.missingPrices++;
+    // Wait for the partner leg's bar for this minute, and never score a minute twice.
+    const lastTs = this.state.lastObservationTs;
+    if (bar1.ts !== bar2.ts || (lastTs !== null && bar1.ts <= lastTs)) {
+      if (this._debugEnabled) this._debug.unpairedBars++;
       return null;
     }
+    this.state.lastObservationTs = bar1.ts;
 
     const ts = nowMs();
-    const { spread, hedgeRatio } = this._ingest(ts, price1, price2);
+    const { spread, hedgeRatio } = this._ingest(ts, bar1.close, bar2.close);
 
     // Enforce cooldown
     if (this.state.cooldownActive && this.state.cooldownExpiresAt !== null) {
@@ -165,32 +167,29 @@ export class PairsStrategy extends BaseStrategy {
 
   /**
    * Rebuilds the spread and OLS windows from history. Samples exactly like
-   * evaluate() — one observation per leg-1 tick, paired with leg 2's latest
-   * price — but never reaches the entry/exit logic, so no signal is emitted
-   * and position state is untouched.
+   * evaluate() — one observation per minute in which both legs have a bar —
+   * but never reaches the entry/exit logic, so no signal is emitted and
+   * position state is untouched. The last minute primed is remembered, so the
+   * same bar arriving live afterwards is not counted again.
    */
   warmUp(bars: Bar[]): number {
     const { leg1Symbol, leg2Symbol } = this.pairsConfig;
-    let price1: number | null = null;
-    let price2: number | null = null;
     let primed = 0;
 
-    // Bars sharing a timestamp are applied together, so a leg-1 observation
-    // pairs with leg 2's close from the same minute rather than the one before.
     let i = 0;
     while (i < bars.length) {
-      const ts = bars[i].ts;
-      let leg1Ticked = false;
-      for (; i < bars.length && bars[i].ts === ts; i++) {
-        if (bars[i].symbol === leg1Symbol) {
-          price1 = bars[i].close;
-          leg1Ticked = true;
-        } else if (bars[i].symbol === leg2Symbol) {
-          price2 = bars[i].close;
-        }
+      const first = bars[i];
+      let close1: number | null = null;
+      let close2: number | null = null;
+      for (; i < bars.length && bars[i].ts === first.ts; i++) {
+        if (bars[i].symbol === leg1Symbol) close1 = bars[i].close;
+        else if (bars[i].symbol === leg2Symbol) close2 = bars[i].close;
       }
-      if (leg1Ticked && price1 !== null && price2 !== null) {
-        this._ingest(ts, price1, price2);
+      const lastTs = this.state.lastObservationTs;
+      if (close1 !== null && close2 !== null && (lastTs === null || first.ts > lastTs)) {
+        // Stamped when the minute completed, as evaluate() sees it.
+        this._ingest(barEndMs(first), close1, close2);
+        this.state.lastObservationTs = first.ts;
         primed++;
       }
     }
@@ -475,6 +474,7 @@ export class PairsStrategy extends BaseStrategy {
       olsLeg1Window: new RollingTimeWindow(this.pairsConfig.olsWindowMs),
       olsLeg2Window: new RollingTimeWindow(this.pairsConfig.olsWindowMs),
       barsSinceOlsRecalc: 0,
+      lastObservationTs: null,
     };
   }
 
@@ -490,7 +490,7 @@ export class PairsStrategy extends BaseStrategy {
     console.log("\n=== PairsStrategy Signal Funnel ===");
     console.log(`  evaluate() calls:         ${this._debug.evaluateCalls}`);
     console.log(`  ├─ missing leg data:       ${this._debug.missingLegData}`);
-    console.log(`  ├─ missing prices:         ${this._debug.missingPrices}`);
+    console.log(`  ├─ unpaired/repeat bars:   ${this._debug.unpairedBars}`);
     console.log(`  ├─ cooldown suppressed:    ${this._debug.cooldownSuppressed}`);
     console.log(`  ├─ insufficient obs:       ${this._debug.insufficientObservations}`);
     console.log(`  ├─ zScore null:            ${this._debug.zScoreNull}`);

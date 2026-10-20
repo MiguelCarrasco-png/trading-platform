@@ -48,6 +48,7 @@ import { OrderStateManager } from '../../core/state/orderState';
 import type { EvaluationContext } from '../../strategies/base/strategy';
 import type { PairsInternalState } from '../../strategies/pairs/pairsTypes';
 import type { ZScoreResult } from '../../services/indicators/zscore';
+import type { Bar } from '../../types/market';
 
 const mockNowMs = nowMs as jest.Mock;
 const mockZScore = computeZScoreFromStats as jest.Mock;
@@ -68,25 +69,28 @@ const testConfig = createPairsConfig('A', 'B', {
   olsRecalcIntervalBars: 999,
 });
 
-function makeContext(mid1: number, mid2: number): EvaluationContext {
-  const symbolState = new SymbolStateManager();
-  const isoTs = new Date(currentTs).toISOString();
-  symbolState.onQuote({
-    symbol: 'A', bidPrice: mid1 - 0.01, askPrice: mid1 + 0.01,
-    bidSize: 100, askSize: 100, midPrice: mid1, spread: 0.02,
-    microPrice: mid1, imbalance: 0, ts: currentTs, isoTs,
-  });
-  symbolState.onQuote({
-    symbol: 'B', bidPrice: mid2 - 0.01, askPrice: mid2 + 0.01,
-    bidSize: 100, askSize: 100, midPrice: mid2, spread: 0.02,
-    microPrice: mid2, imbalance: 0, ts: currentTs, isoTs,
-  });
+function bar(symbol: string, close: number, ts = currentTs): Bar {
   return {
-    symbol: 'A',
+    symbol, open: close, high: close, low: close, close, volume: 1_000,
+    ts, isoTs: new Date(ts).toISOString(), timeframe: '1Min',
+  };
+}
+
+function contextFor(symbolState: SymbolStateManager, symbol = 'A'): EvaluationContext {
+  return {
+    symbol,
     symbolState,
     portfolioState: new PortfolioStateManager(100_000),
     orderState: new OrderStateManager(),
   };
+}
+
+/** Both legs' completed bars for the current minute, closing at the given prices. */
+function makeContext(close1: number, close2: number): EvaluationContext {
+  const symbolState = new SymbolStateManager();
+  symbolState.onBar(bar('A', close1));
+  symbolState.onBar(bar('B', close2));
+  return contextFor(symbolState);
 }
 
 const NEUTRAL_Z: ZScoreResult = { zScore: 0, mean: 0, std: 0.1, value: 0 };
@@ -140,24 +144,10 @@ describe('pre-entry: no signal', () => {
     expect(strategy.evaluate(makeContext(100, 100))).toBeNull();
   });
 
-  it('returns null when context.symbol is leg2Symbol (only evaluates on leg1 bar)', () => {
-    const strategy = makeStrategy();
-    const ctx: EvaluationContext = {
-      ...makeContext(100, 100),
-      symbol: 'B', // leg2 — should be ignored
-    };
-    expect(strategy.evaluate(ctx)).toBeNull();
-  });
-
   it('returns null when a symbol has no state', () => {
     const strategy = makeStrategy();
-    const ctx: EvaluationContext = {
-      symbol: 'A',
-      symbolState: new SymbolStateManager(), // empty — no quotes pushed
-      portfolioState: new PortfolioStateManager(100_000),
-      orderState: new OrderStateManager(),
-    };
-    expect(strategy.evaluate(ctx)).toBeNull();
+    // empty — no bars pushed
+    expect(strategy.evaluate(contextFor(new SymbolStateManager()))).toBeNull();
   });
 
   it('returns null before minObservations are reached', () => {
@@ -176,6 +166,64 @@ describe('pre-entry: no signal', () => {
     mockZScore.mockReturnValue(NEUTRAL_Z);
     currentTs += 1000;
     expect(strategy.evaluate(makeContext(100, 100))).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sampling: one observation per minute in which both legs closed a bar
+// ---------------------------------------------------------------------------
+describe('bar sampling', () => {
+  const observations = (strategy: PairsStrategy) =>
+    (strategy as unknown as { state: PairsInternalState }).state.spreadWindow.size();
+
+  it('triggers on bars only', () => {
+    expect(makeStrategy().triggers).toEqual(['bar']);
+  });
+
+  it('scores a minute once its second bar arrives, whichever leg that is', () => {
+    const strategy = makeStrategy();
+    const state = new SymbolStateManager();
+    state.onBar(bar('A', 100, currentTs - 60_000));
+    state.onBar(bar('B', 100, currentTs - 60_000));
+    strategy.evaluate(contextFor(state, 'A'));
+    expect(observations(strategy)).toBe(1);
+
+    // Leg 1's next bar arrives first: leg 2 is still a minute behind.
+    state.onBar(bar('A', 101));
+    strategy.evaluate(contextFor(state, 'A'));
+    expect(observations(strategy)).toBe(1);
+
+    state.onBar(bar('B', 99));
+    strategy.evaluate(contextFor(state, 'B'));
+    expect(observations(strategy)).toBe(2);
+  });
+
+  it('never scores the same minute twice', () => {
+    const strategy = makeStrategy();
+    const ctx = makeContext(100, 100);
+    strategy.evaluate(ctx);
+    strategy.evaluate(ctx);
+    strategy.evaluate({ ...ctx, symbol: 'B' });
+    expect(observations(strategy)).toBe(1);
+  });
+
+  it('prices each leg at its bar close, not a later quote', () => {
+    const strategy = makeStrategy();
+    const ctx = makeContext(100, 40);
+    ctx.symbolState.onQuote({
+      symbol: 'A', bidPrice: 109.99, askPrice: 110.01, bidSize: 100, askSize: 100,
+      midPrice: 110, spread: 0.02, microPrice: 110, imbalance: 0,
+      ts: currentTs + 1, isoTs: new Date(currentTs + 1).toISOString(),
+    });
+    strategy.evaluate(ctx);
+    const s = (strategy as unknown as { state: PairsInternalState }).state;
+    expect(s.lastSpread).toBe(60); // 100 - 1.0 × 40
+  });
+
+  it('ignores symbols outside the pair', () => {
+    const strategy = makeStrategy();
+    expect(strategy.evaluate({ ...makeContext(100, 100), symbol: 'C' })).toBeNull();
+    expect(observations(strategy)).toBe(0);
   });
 });
 

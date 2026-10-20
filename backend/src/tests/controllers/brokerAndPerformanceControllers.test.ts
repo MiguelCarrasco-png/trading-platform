@@ -139,11 +139,40 @@ describe("compareRunWithBacktest", () => {
     expect(jobs.enqueueBacktestJob).not.toHaveBeenCalled();
   });
 
-  it("says plainly when the strategy type cannot be backtested", async () => {
+  it("keeps a quote-fill comparison separate from the bar-model one", async () => {
+    (repos.getStrategyRunById as jest.Mock).mockResolvedValue({ ...pairsRun, meta: { compareBacktestId: "bt-bar" } });
+    const res = mockRes();
+    await compareRunWithBacktest(postReq("run-p", { execution: { model: "quote", latencyMs: 300 } }), res);
+    expect(res.status).toHaveBeenCalledWith(202);
+    const { config } = (jobs.enqueueBacktestJob as jest.Mock).mock.calls[0][0];
+    expect(config.execution).toMatchObject({ model: "quote", latencyMs: 300, feed: "sip" });
+    expect(repos.updateStrategyRun).toHaveBeenCalledWith("run-p", {
+      meta: { compareBacktestId: "bt-bar", compareQuoteBacktestId: config.id },
+    });
+  });
+
+  it("rejects an invalid execution setting", async () => {
+    (repos.getStrategyRunById as jest.Mock).mockResolvedValue(pairsRun);
+    const res = mockRes();
+    await compareRunWithBacktest(postReq("run-p", { execution: { model: "quote", latencyMs: -1 } }), res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(jobs.enqueueBacktestJob).not.toHaveBeenCalled();
+  });
+
+  it("queues a comparison for a supported non-pairs strategy", async () => {
     (repos.getStrategyRunById as jest.Mock).mockResolvedValue({ ...pairsRun, strategyType: "minute_reversal" });
     const res = mockRes();
     await compareRunWithBacktest(postReq("run-p"), res);
+    expect(res.status).toHaveBeenCalledWith(202);
+    expect(jobs.enqueueBacktestJob).toHaveBeenCalled();
+  });
+
+  it("says plainly when the strategy type cannot be backtested", async () => {
+    (repos.getStrategyRunById as jest.Mock).mockResolvedValue({ ...pairsRun, strategyType: "unregistered_strategy" });
+    const res = mockRes();
+    await compareRunWithBacktest(postReq("run-p"), res);
     expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json.mock.calls[0][0].error).toMatch(/not supported for minute_reversal/);
+    expect(res.json.mock.calls[0][0].error).toMatch(/not supported for unregistered_strategy/);
+    expect(jobs.enqueueBacktestJob).not.toHaveBeenCalled();
   });
 });

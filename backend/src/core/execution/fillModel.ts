@@ -124,6 +124,39 @@ export function pickReferencePrice(bar: Bar, strategy: FillReferencePrice): numb
 }
 
 /**
+ * Whether a stop at `stopPrice` triggers during `bar`, and the price it then
+ * executes from: the stop itself, or the open when the bar gaps through it
+ * (a buy stop never executes below its stop, a sell stop never above). Null
+ * when the bar's range never reached the stop.
+ */
+export function stopTriggerPrice(side: "buy" | "sell", stopPrice: number, bar: Bar): number | null {
+  if (side === "buy") return bar.high >= stopPrice ? Math.max(bar.open, stopPrice) : null;
+  return bar.low <= stopPrice ? Math.min(bar.open, stopPrice) : null;
+}
+
+/**
+ * The bar fill model for any order type. A stop or stop-limit that the bar
+ * does not reach returns null — it keeps working. Once triggered it executes
+ * as a market (stop) or limit (stop-limit) order from the trigger price, with
+ * the same spread, slippage and volume cap as any other bar fill; a stop-limit
+ * whose limit that price does not satisfy is rejected, as bar-model limits are.
+ */
+export function evaluateBarFill(
+  intent: OrderIntent,
+  bar: Bar,
+  config: FillModelConfig = DEFAULT_FILL_MODEL,
+): FillModelDecision | null {
+  if (intent.orderType !== "stop" && intent.orderType !== "stop_limit") return evaluateFill(intent, bar, config);
+  if (intent.stopPrice === undefined || !Number.isFinite(intent.stopPrice)) {
+    return { outcome: "rejected", filledQty: 0, fillPrice: null, remainingQty: intent.qty, reason: "Stop order missing stopPrice" };
+  }
+  const trigger = stopTriggerPrice(intent.side, intent.stopPrice, bar);
+  if (trigger === null) return null;
+  const triggered: OrderIntent = { ...intent, orderType: intent.orderType === "stop" ? "market" : "limit" };
+  return evaluateFill(triggered, { ...bar, open: trigger }, { ...config, referencePrice: "next_open" });
+}
+
+/**
  * Evaluates the fill model for the given intent against the reference bar.
  * Pure function; does not mutate inputs.
  *
