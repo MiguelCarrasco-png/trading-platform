@@ -60,6 +60,12 @@ export interface StrategyVersion {
   changeSummary: string | null;
   createdBy: UUID | null;
   createdAt: EpochMs;
+  /**
+   * Strategy class VERSION current when this config was saved. A run always uses
+   * the CURRENT algorithm, so a lower value than the live one means the config
+   * predates it. null = saved before this was recorded.
+   */
+  algorithmVersion?: number | null;
   /** Joined for display; not a column */
   createdByName?: string | null;
   /** Present after save when this version advanced an open proposal. */

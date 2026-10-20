@@ -22,6 +22,7 @@ Set `LOG_LEVEL=debug` in `backend/.env` for the extra "why did it not trade?" li
 | Order never filled | Immediate-or-cancel order found no match | Info line `… expired without filling` |
 | Strategy code throws | A bug in `evaluate()` | Status card: "N evaluation errors in a row"; an **ERROR** event; after `MAX_CONSECUTIVE_STRATEGY_ERRORS` (default 5) the run is disabled (**AUTO DISABLED**, with the last error) |
 | Results don't match the code you just wrote | The backend wasn't restarted, or the run uses an older version | Check the `vN` badge and the version you started (the form shows *Running an older version…*); restart the backend |
+| An old saved version behaves differently now | A run always uses the **current** algorithm, not the one the version was written for | The version list shows `algo vN` for each saved version; the form warns "saved for algorithm v1; the current algorithm is v2". Versions saved before this was recorded show no `algo` label |
 
 ## Repeated problems are summarised
 

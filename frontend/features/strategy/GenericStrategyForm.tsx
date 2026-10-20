@@ -228,7 +228,12 @@ export default function GenericStrategyForm({ type, onSubmit }: Props) {
             />
           )}
         </Field>
-        {selectedId !== "new" && <VersionSelect versions={versions} value={pickedVersionId} onChange={setPickedVersionId} />}
+        {selectedId !== "new" && <VersionSelect
+            versions={versions}
+            value={pickedVersionId}
+            onChange={setPickedVersionId}
+            currentAlgorithmVersion={definition.algorithmVersion}
+          />}
       </div>
 
       <div className="grid grid-cols-2 gap-3 rounded-md border border-zinc-200 p-3 dark:border-zinc-700">

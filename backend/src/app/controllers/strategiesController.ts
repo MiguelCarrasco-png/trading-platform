@@ -350,6 +350,7 @@ export async function createStrategy(req: Request, res: Response): Promise<void>
         config,
         changeSummary: "Initial version",
         createdBy: req.user!.id,
+        algorithmVersion: def.algorithmVersion,
       });
     } catch (versionErr) {
       await deleteStrategy(strategy.id);
@@ -400,6 +401,7 @@ export async function updateStrategyConfig(req: Request, res: Response): Promise
       config,
       changeSummary: changeSummary?.trim() || "Updated strategy configuration",
       createdBy: req.user!.id,
+      algorithmVersion: STRATEGY_DEFINITIONS[existing.strategy_type]?.algorithmVersion ?? null,
     });
     res.json({ message: "Strategy updated", version });
   } catch (err) {

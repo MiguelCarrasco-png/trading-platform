@@ -5,7 +5,8 @@
  * immutable snapshots, newest first; the newest is the default, so picking an
  * older one is a deliberate act (e.g. last week's version behaves better).
  *
- * Inputs:  versions (newest first), the picked id (null = newest), onChange.
+ * Inputs:  versions (newest first), the picked id (null = newest), onChange, and
+ *          the strategy's current algorithm version (to flag outdated configs).
  * Outputs: Controlled select; null from onChange is never emitted.
  */
 
@@ -18,19 +19,27 @@ interface Props {
   /** The id the member picked, or null to run the newest. */
   value: string | null;
   onChange: (versionId: string | null) => void;
+  /** The deployed algorithm version for this strategy type. */
+  currentAlgorithmVersion?: number;
 }
 
-/** "v3 - widened the window - Ana (Oct 19)" */
+/** "v3 - algo v2 - widened the window - Ana (10/19/2026)" */
 export function versionLabel(v: StrategyVersion): string {
   const note = v.changeSummary?.trim() || "no note";
+  const algo = v.algorithmVersion != null ? ` - algo v${v.algorithmVersion}` : "";
   const who = v.createdByName ? ` - ${v.createdByName}` : "";
-  return `v${v.versionNumber} - ${note}${who} (${new Date(v.createdAt).toLocaleDateString()})`;
+  return `v${v.versionNumber}${algo} - ${note}${who} (${new Date(v.createdAt).toLocaleDateString()})`;
 }
 
-export default function VersionSelect({ versions, value, onChange }: Props) {
+export default function VersionSelect({ versions, value, onChange, currentAlgorithmVersion }: Props) {
   if (versions.length === 0) return null;
   const newest = versions[0];
   const picked = versions.find((v) => v.id === value) ?? newest;
+  // A run always executes the CURRENT algorithm, whatever the config was written for.
+  const outdated =
+    picked.algorithmVersion != null &&
+    currentAlgorithmVersion != null &&
+    picked.algorithmVersion < currentAlgorithmVersion;
   return (
     <div className="flex flex-col gap-1">
       <label htmlFor="version-select" className="text-xs font-medium text-zinc-500">Version to run</label>
@@ -49,6 +58,12 @@ export default function VersionSelect({ versions, value, onChange }: Props) {
       {picked.id !== newest.id && (
         <span className="text-[11px] text-amber-600 dark:text-amber-400">
           Running an older version (v{picked.versionNumber}); the latest is v{newest.versionNumber}.
+        </span>
+      )}
+      {outdated && (
+        <span className="text-[11px] text-amber-600 dark:text-amber-400">
+          This version was saved for algorithm v{picked.algorithmVersion}; the current algorithm is v{currentAlgorithmVersion}.
+          It will run on v{currentAlgorithmVersion}, so it may behave differently than when it was written.
         </span>
       )}
     </div>

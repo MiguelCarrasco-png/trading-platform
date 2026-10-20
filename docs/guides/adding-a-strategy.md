@@ -63,6 +63,13 @@ minute reversal) are declared inline in `strategyCatalog.ts` rather than gaining
 manifest file that would force a bump. New strategies keep their manifest in their own
 folder; it is part of their first version, so no bump is needed.
 
+## Bump VERSION when behaviour changes
+
+Each saved config version records the strategy's `VERSION` at the time (`strategy_versions.algorithm_version`).
+A run always executes the *current* code, so after you bump `VERSION` the forms flag older saved versions
+("saved for algorithm v1; the current algorithm is v2") instead of letting them surprise someone. CI enforces the bump
+for existing strategies (`scripts/check-strategy-versions.mjs`).
+
 ## Make "why didn't it trade?" answerable
 
 Log the reason when a guard you wrote suppresses a trade (info), and routine skips at debug. See

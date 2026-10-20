@@ -119,6 +119,7 @@ export async function createVersion(req: Request, res: Response): Promise<void> 
       config,
       changeSummary: changeSummary ?? null,
       createdBy: req.user!.id,
+      algorithmVersion: STRATEGY_DEFINITIONS[strategy.strategy_type]?.algorithmVersion ?? null,
     });
 
     // Keep strategies.config pointing at the newest version so every existing

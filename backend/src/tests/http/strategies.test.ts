@@ -252,6 +252,10 @@ describe("Strategies HTTP API", () => {
         .set("Authorization", "Bearer valid")
         .send({ name: "Updated", config: {} });
       expect(res.status).toBe(200);
+      // Each saved version records the algorithm it was written for.
+      expect(review.saveStrategyVersion).toHaveBeenCalledWith(
+        expect.objectContaining({ strategyId: "cfg-1", algorithmVersion: PairsStrategy.VERSION }),
+      );
     });
   });
 
@@ -313,6 +317,7 @@ describe("Strategies HTTP API", () => {
           strategyId: "cfg-1",
           changeSummary: "Initial version",
           createdBy: "user-1",
+          algorithmVersion: PairsStrategy.VERSION,
         }),
       );
     });

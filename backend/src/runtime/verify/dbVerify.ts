@@ -45,7 +45,7 @@ const BACKEND_FUNCTIONS = [
   "claim_orphaned_runs(text, text, text, integer, text)",
   "heartbeat_run_leases(text, uuid[], integer)",
   "release_run_lease(uuid, text)",
-  "save_strategy_version(uuid, text, jsonb, text, uuid)",
+  "save_strategy_version(uuid, text, jsonb, text, uuid, integer)",
 ];
 
 const REQUIRED_INDEXES = [

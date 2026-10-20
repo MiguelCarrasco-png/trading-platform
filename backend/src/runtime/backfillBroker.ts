@@ -115,6 +115,7 @@ async function applyPlannedRun(planned: PlannedRun, account: string, mode: "pape
         strategy_id: strategy.id,
         config: { ...STRATEGY_DEFINITIONS[template.strategyType].defaultConfig, ...template.config },
         change_summary: "Recorded by the broker backfill from Alpaca history",
+        algorithm_version: STRATEGY_DEFINITIONS[template.strategyType].algorithmVersion,
       }).select("id").single();
       if (vErr) throw new Error(`version insert failed: ${vErr.message}`);
       versionId = version.id as string;

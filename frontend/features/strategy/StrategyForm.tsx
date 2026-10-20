@@ -293,7 +293,12 @@ export default function StrategyForm({ onSubmit, isLoading }: Props) {
           </Field>
         )}
 
-        {selectedId !== "new" && <VersionSelect versions={versions} value={pickedVersionId} onChange={setPickedVersionId} />}
+        {selectedId !== "new" && <VersionSelect
+            versions={versions}
+            value={pickedVersionId}
+            onChange={setPickedVersionId}
+            currentAlgorithmVersion={definition?.algorithmVersion}
+          />}
 
         {/* Version history — who edited this config, and when */}
         {selectedId !== "new" && (

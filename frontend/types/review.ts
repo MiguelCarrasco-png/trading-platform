@@ -30,6 +30,12 @@ export interface StrategyVersion {
   createdBy: string | null;
   createdAt: number;
   createdByName?: string | null;
+  /**
+   * Strategy algorithm version current when this config was saved. A run always
+   * uses the CURRENT algorithm, so a lower number than the live one means the
+   * config predates it. null/absent = saved before this was recorded.
+   */
+  algorithmVersion?: number | null;
   /** Present on the create response: the open proposal this version attached to. */
   attachedToProposalId?: string | null;
 }

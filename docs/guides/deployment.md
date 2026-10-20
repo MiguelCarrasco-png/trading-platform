@@ -27,6 +27,11 @@ Append the deploy public key to `~/.ssh/authorized_keys`.
 ### Supabase
 - Run migrations from your machine, before the first deploy and after any new migration:
   `cd backend && DATABASE_URL=<session pooler URL> npm run db:migrate`
+  Apply a new migration **before** deploying the backend that depends on it. Migration 0018
+  (`strategy_versions.algorithm_version`) replaces `save_strategy_version` with a six-argument
+  version: the migrated database still accepts an old backend's five-argument call, but a new
+  backend calling an un-migrated database fails to save strategies. `npm run db:verify` checks the
+  new signature.
 - Authentication → URL Configuration: Site URL = the Vercel URL; add
   `https://<app>.vercel.app/**` to redirect URLs.
 
