@@ -42,6 +42,53 @@ export const regularSessionHours: MarketHours = {
   },
 };
 
+const NY_DATE = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
+
+/** New York wall-clock fields of an instant. */
+function nyFields(ts: number): { year: number; month: number; day: number; hour: number; minute: number; second: number } {
+  const p = Object.fromEntries(NY_DATE.formatToParts(new Date(ts)).map((x) => [x.type, x.value]));
+  return { year: +p.year, month: +p.month, day: +p.day, hour: +p.hour, minute: +p.minute, second: +p.second };
+}
+
+/** The instant at a New York wall-clock time on a calendar date (month 1-12; day may overflow). */
+function nyWallTimeToMs(year: number, month: number, day: number, hour: number, minute: number): number {
+  const guess = Date.UTC(year, month - 1, day, hour, minute);
+  // Offset of New York from UTC at that instant; checked twice so a guess on
+  // the far side of a DST switch still lands on the right wall time.
+  const offsetAt = (utcMs: number) => {
+    const f = nyFields(utcMs);
+    return Date.UTC(f.year, f.month - 1, f.day, f.hour, f.minute, f.second) - utcMs;
+  };
+  const first = guess - offsetAt(guess);
+  return guess - offsetAt(first);
+}
+
+/**
+ * The end of the regular session a DAY order placed at `ts` lives in: 16:00
+ * New York time that day if it is a weekday not yet past the close, otherwise
+ * the next weekday's. No holiday or early-close calendar, as in
+ * regularSessionHours: a holiday's "close" passes with no bars after it.
+ */
+export function regularSessionCloseAfter(ts: number): number {
+  const { year, month, day } = nyFields(ts);
+  for (let offset = 0; offset < 8; offset++) {
+    const weekday = new Date(Date.UTC(year, month - 1, day + offset)).getUTCDay();
+    if (weekday === 0 || weekday === 6) continue;
+    const close = nyWallTimeToMs(year, month, day + offset, 16, 0);
+    if (close > ts) return close;
+  }
+  throw new Error(`no regular-session close found after ${new Date(ts).toISOString()}`);
+}
+
 export interface AlpacaClock {
   is_open: boolean;
   next_open: string;

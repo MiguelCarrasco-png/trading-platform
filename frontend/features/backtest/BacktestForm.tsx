@@ -3,7 +3,8 @@
  *
  * Form for configuring and launching a backtest run.
  * Shows the full strategy config (same fields as StrategyForm) plus the
- * backtest-specific extras: date range, initial capital, and spread buffer.
+ * backtest-specific extras: date range, initial capital, how fills are priced,
+ * and spread buffer.
  * Picking a saved config populates all strategy fields; they remain
  * editable before submitting.
  *
@@ -59,6 +60,10 @@ export default function BacktestForm({ onSubmit, isLoading }: Props) {
   const [endDate, setEndDate] = useState(daysAgoString(1));
   const [initialCapital, setInitialCapital] = useState(100_000);
   const [spreadBufferBps, setSpreadBufferBps] = useState(5);
+
+  // How fills are priced: the next bar's open, or the real bid/ask on arrival.
+  const [fillModel, setFillModel] = useState<"bar" | "quote">("bar");
+  const [latencyMs, setLatencyMs] = useState(250);
 
   // Per-strategy risk budget (matches StrategyForm)
   const [riskBudget, setRiskBudget] = useState<RiskBudgetState>(defaultRiskBudgetState);
@@ -148,6 +153,7 @@ export default function BacktestForm({ onSubmit, isLoading }: Props) {
       initialCapital,
       dataGranularity: "bar",
       commissionPerShare: 0.005,
+      ...(fillModel === "quote" && { execution: { model: "quote", latencyMs } }),
       strategyId: selectedStrategy?.id,
       strategyVersionId: selectedStrategy ? latestVersionId : undefined,
       riskConfig: {
@@ -258,6 +264,37 @@ export default function BacktestForm({ onSubmit, isLoading }: Props) {
             <input type="number" min="1000" step="1000" value={initialCapital} onChange={(e) => setInitialCapital(Number(e.target.value))} className={inputClass} />
           </Field>
         </div>
+      </div>
+
+      {/* Fills */}
+      <div className="flex flex-col gap-3 rounded-md border border-zinc-200 p-3 dark:border-zinc-700">
+        <p className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">Fills</p>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Price Orders At">
+            <select value={fillModel} onChange={(e) => setFillModel(e.target.value as "bar" | "quote")} className={inputClass}>
+              <option value="bar">Next bar&apos;s open</option>
+              <option value="quote">Real bid/ask on arrival</option>
+            </select>
+          </Field>
+          {fillModel === "quote" && (
+            <Field label="Order Latency (ms)">
+              <input
+                type="number"
+                min="0"
+                max="25000"
+                step="50"
+                value={latencyMs}
+                onChange={(e) => setLatencyMs(Number(e.target.value))}
+                className={inputClass}
+              />
+            </Field>
+          )}
+        </div>
+        <p className="text-xs text-zinc-500">
+          {fillModel === "quote"
+            ? "Each order trades at the real bid/ask when it reaches the market, the latency after the decision; a resting limit fills only on trades printing through it. The first run fetches about one window of quotes per order from Alpaca; reruns read them from the local cache."
+            : "Each order fills at the next bar's open, plus a synthetic spread and slippage."}
+        </p>
       </div>
 
       {/* Portfolio Allocation */}

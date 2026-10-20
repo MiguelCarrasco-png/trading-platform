@@ -12,6 +12,7 @@
 
 import PnLChart from "../../components/charts/PnLChart";
 import PerformancePanel from "../performance/PerformancePanel";
+import ExecutionSummary from "./ExecutionSummary";
 import type { BacktestResult } from "../../types/api";
 import { formatDuration, formatTimestamp } from "../../utils/dates";
 
@@ -118,6 +119,8 @@ export default function BacktestResults({ result, onRerun, onSave, isSaving = fa
       ) : (
         showChart && <PnLChart data={equityCurve} height={280} />
       )}
+
+      {metrics?.meta?.execution && <ExecutionSummary report={metrics.meta.execution} />}
     </div>
   );
 }

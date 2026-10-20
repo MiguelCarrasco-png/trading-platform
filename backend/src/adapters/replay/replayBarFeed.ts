@@ -5,9 +5,10 @@
  * 1-minute bars through the same BAR_RECEIVED path a live feed uses, so the
  * strategy, risk, simulated execution, and persistence run exactly as live.
  *
- * Bars are re-stamped with the moment they are published. A replay has no
- * quote stream, so the bar is the freshest price the risk engine sees; stamping
- * it "now" keeps the stale-quote check meaningful instead of rejecting every
+ * Bars are re-stamped as the minute that ends at the moment they are published.
+ * A replay has no quote stream, so the bar is the freshest price the risk
+ * engine sees, and the stale-quote check measures it from the bar's end;
+ * stamping it this way keeps that check meaningful instead of rejecting every
  * order. At REPLAY_SPEED > 1 the wall-clock gaps between bars shrink, so
  * strategies that reason about bar spacing see compressed time.
  *
@@ -143,9 +144,11 @@ export class ReplayBarFeed {
     this.schedule.delete(key);
     this.resumeFrom = key + 1;
     const now = this.timers.now();
+    // A bar published now has just completed, so it is stamped as the minute
+    // that ended now; its close then counts as fresh, as a live bar's would.
+    const ts = now - BAR_MS;
     for (const bar of group) {
       if (!this.subscribed.has(bar.symbol)) continue;
-      const ts = now;
       this.eventBus.publish({
         id: newId(),
         type: "BAR_RECEIVED",

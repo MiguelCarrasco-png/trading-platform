@@ -5,6 +5,11 @@ containers and Docker Compose for the application processes. This keeps the
 database/auth stack aligned with Supabase releases without copying its internal
 Compose file into this repository.
 
+No Docker available (locked-down laptop, Docker Desktop won't start, etc)?
+See [local-development-no-docker.md](./local-development-no-docker.md) instead —
+same migrations and app code, a hosted Supabase project instead of the local
+container, processes run directly with `npm run dev:*`.
+
 ## Prerequisites
 
 - Node.js 22+
@@ -41,7 +46,7 @@ recorded in your local Supabase, which acts as the sim broker's ledger.
 | You have | Set in your shell before `npm run dev:stack` | What happens |
 |---|---|---|
 | Nothing | — | Sim book, replaying cached bars. Seed them with `npm run data:pull` (below). |
-| Free Alpaca account (data only) | your **own** `ALPACA_DATA_KEY`, `ALPACA_DATA_SECRET` in your shell **or** `backend/.env` | Backtests fetch bars with your key. Add `LOCAL_STREAM_DATA=1` to also run the live IEX stream in the paper runner. |
+| Free Alpaca account (data only) | your **own** `ALPACA_DATA_KEY`, `ALPACA_DATA_SECRET` in your shell **or** `backend/.env` | Backtests fetch bars with your key. Add `LOCAL_STREAM_DATA=1` to also run the live IEX stream in the paper runner; sim orders then fill against its quotes and trades ([details](../architecture/backtest-execution.md#the-sim-runtime)). |
 | Your own Alpaca paper account | `EXECUTION_TARGET=alpaca-paper`, `ALPACA_API_KEY`, `ALPACA_API_SECRET` | Orders go to **your** paper account and sync into your local Supabase. |
 
 **Market data uses your own Alpaca keys, never the club's.** `dev:stack` reads

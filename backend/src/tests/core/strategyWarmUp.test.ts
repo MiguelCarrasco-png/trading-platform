@@ -61,11 +61,30 @@ describe('PairsStrategy.warmUp', () => {
     expect(signal!.direction).toBe('short');
   });
 
-  it('samples like evaluate(): one observation per leg-1 bar, leg-2 bars alone add nothing', () => {
+  it('samples like evaluate(): one observation per minute in which both legs have a bar', () => {
     const s = new PairsStrategy(config);
     const now = Date.now();
     const onlyLeg2 = [bar('CVX', now - 3 * MIN, 100), bar('CVX', now - 2 * MIN, 100)];
     expect(s.warmUp(onlyLeg2)).toBe(0);
+    const onlyLeg1 = [bar('XOM', now - 3 * MIN, 100), bar('XOM', now - 2 * MIN, 100)];
+    expect(s.warmUp(onlyLeg1)).toBe(0);
+  });
+
+  it('does not count the last primed minute again when its bars arrive live', () => {
+    const s = new PairsStrategy(config);
+    s.start();
+    const now = Date.now();
+    expect(s.warmUp(history(now))).toBe(40);
+
+    const symbolState = new SymbolStateManager();
+    symbolState.onBar(bar('XOM', now - MIN, 99.9));
+    symbolState.onBar(bar('CVX', now - MIN, 100));
+    s.evaluate({
+      symbol: 'CVX', symbolState,
+      portfolioState: new PortfolioStateManager(100_000), orderState: new OrderStateManager(),
+    });
+    const window = (s as unknown as { state: { spreadWindow: { size(): number } } }).state.spreadWindow;
+    expect(window.size()).toBe(40);
   });
 
   it('asks for its longest window: the OLS window when OLS drives the hedge ratio', () => {

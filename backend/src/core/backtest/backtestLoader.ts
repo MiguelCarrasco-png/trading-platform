@@ -26,11 +26,14 @@ import {
   utcDaysInRange,
   type BarCache,
 } from "./barCache";
-import type { Bar } from "../../types/market";
+import type { Bar, HistoricalFeed } from "../../types/market";
 import type { Symbol, ISOTimestamp } from "../../types/common";
 
 /** Cached reads are sliced so no single get_bars response grows unbounded. */
 const CACHE_READ_SLICE_DAYS = 10;
+
+/** Historical bars come from the consolidated feed (all US exchanges). */
+export const BAR_FEED: HistoricalFeed = "sip";
 
 export interface BacktestLoaderOptions {
   /** Shared bar cache (Part 03). Omit to always fetch from Alpaca. */
@@ -345,6 +348,9 @@ export class BacktestLoader {
         timeframe,
         limit: "10000",
         adjustment: "raw",
+        // Alpaca's default today, pinned: the bar cache has no feed column, so
+        // every cached bar must come from the same feed (all exchanges).
+        feed: BAR_FEED,
         ...(pageToken ? { page_token: pageToken } : {}),
       });
 

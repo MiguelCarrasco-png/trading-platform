@@ -151,6 +151,17 @@ export interface Fill {
   isoTs: ISOTimestamp;
   /** Exchange where fill occurred */
   exchange?: string;
+
+  // Backtest attribution, set by the simulator (absent on broker fills):
+  /** What priced the fill: real quotes ("quote"), a print through a resting limit ("trade"), or the next bar's open ("bar"). */
+  source?: "quote" | "trade" | "bar";
+  /** Why a quote-model order was priced by the bar model instead. */
+  fallbackReason?: string;
+  /** Best bid and ask prevailing when the order reached the market. */
+  arrivalBid?: number;
+  arrivalAsk?: number;
+  /** Mid prevailing when the strategy decided; arrival mid minus this is the cost of the delay. */
+  decisionMid?: number;
 }
 
 // ------------------------------------------------------------------

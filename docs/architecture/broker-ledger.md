@@ -38,8 +38,9 @@ LedgerMaintainer (every 60 s, and ~3 s after a fill)
 ```
 
 A sim book (`EXECUTION_TARGET=sim`) is its own broker: `SimulatedExecutionSink`
-fills orders on the next bar and the runtime writes those fills directly, so it
-has no sync step. `SimBroker` reads the same tables back through `IBroker`.
+fills orders locally — on the live quotes and trades when the runtime streams
+them, otherwise on the next bar — and the runtime writes those fills directly,
+so it has no sync step. `SimBroker` reads the same tables back through `IBroker`.
 
 ## Tables (migrations 0015, 0016)
 

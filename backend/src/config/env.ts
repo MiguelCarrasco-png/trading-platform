@@ -55,6 +55,16 @@ function marketDataInvalidPolicy(): "pass" | "quarantine" {
   throw new Error(`MARKET_DATA_INVALID_POLICY must be pass or quarantine, got: "${raw}"`);
 }
 
+/**
+ * How a sim runtime streaming live data prices orders: "quote" against the
+ * live quotes and trades (the backtest's quote model), "bar" on the next bar.
+ */
+function simExecutionModel(): "quote" | "bar" {
+  const raw = optional("SIM_EXECUTION_MODEL", "quote");
+  if (raw === "quote" || raw === "bar") return raw;
+  throw new Error(`SIM_EXECUTION_MODEL must be quote or bar, got: "${raw}"`);
+}
+
 function executionTarget(): ExecutionTarget {
   const raw = optional("EXECUTION_TARGET", "sim");
   if (raw === "sim" || raw === "alpaca-paper" || raw === "alpaca-live") return raw;
@@ -95,6 +105,14 @@ export const env = {
   marketDataInvalidPolicy: marketDataInvalidPolicy(),
   alpacaPaperStreamUrl: optional("ALPACA_PAPER_STREAM_URL", "wss://paper-api.alpaca.markets/stream"),
   alpacaLiveStreamUrl: optional("ALPACA_LIVE_STREAM_URL", "wss://api.alpaca.markets/stream"),
+  /**
+   * Historical market-data requests per minute this process may make. Alpaca's
+   * free plan allows 200 across everything on the key; the default leaves room
+   * for the bar loader.
+   */
+  alpacaDataRequestsPerMinute: optionalNumber("ALPACA_DATA_REQUESTS_PER_MINUTE", 190),
+  /** Local cache of historical quotes and trades (relative paths resolve from the process's cwd). */
+  marketDataDir: optional("MARKET_DATA_DIR", ".local/marketdata"),
 
   // Supabase
   supabaseUrl: requireEnv("SUPABASE_URL"),
@@ -135,6 +153,12 @@ export const env = {
   replayFrom: optional("REPLAY_FROM", ""),
   replayTo: optional("REPLAY_TO", ""),
   replaySpeed: optionalNumber("REPLAY_SPEED", 1),
+
+  // Sim fills. With live data a sim runtime prices orders on the stream's
+  // quotes and trades, assuming SIM_LATENCY_MS from decision to market; a
+  // replay has bars only and fills on the next bar.
+  simExecutionModel: simExecutionModel(),
+  simLatencyMs: optionalNumber("SIM_LATENCY_MS", 250),
 
   // Latency instrumentation of a trading runtime (docs/guides/latency-benchmark.md).
   // Off by default; when on it only observes — no trading decision changes.

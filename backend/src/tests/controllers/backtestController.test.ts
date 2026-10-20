@@ -40,7 +40,7 @@ jest.mock('../../config/env', () => ({
 import type { Request, Response } from 'express';
 import * as repos from '../../adapters/supabase/repositories';
 import * as jobs from '../../adapters/supabase/backtestJobRepository';
-import { BacktestEngine } from '../../core/backtest/backtestEngine';
+import { BacktestEngine, BACKTEST_ENGINE_VERSION } from '../../core/backtest/backtestEngine';
 import {
   listBacktests,
   getBacktest,
@@ -263,6 +263,25 @@ describe('runBacktest', () => {
     await runBacktest(mockReq({ body: validBody }), res);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ backtestId: 'recent-job', reused: true }));
     expect(mockEnqueue).not.toHaveBeenCalled();
+  });
+
+  it('stores a quote execution model fully resolved, and nothing for the bar model', async () => {
+    await runBacktest(mockReq({ body: { ...validBody, execution: { model: 'quote' } } }), mockRes());
+    expect(mockEnqueue.mock.calls[0][0].config.execution).toMatchObject({ model: 'quote', latencyMs: 250, feed: 'sip' });
+    await runBacktest(mockReq({ body: { ...validBody, execution: { model: 'bar' } } }), mockRes());
+    expect(mockEnqueue.mock.calls[1][0].config.execution).toBeUndefined();
+  });
+
+  it('rejects an invalid execution setting with 400', async () => {
+    const res = mockRes();
+    await runBacktest(mockReq({ body: { ...validBody, execution: { model: 'quote', maxQuoteWaitMs: 60_000 } } }), res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mockEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("stamps this build's engine version, not one sent by the client", async () => {
+    await runBacktest(mockReq({ body: { ...validBody, engineVersion: 1 } }), mockRes());
+    expect(mockEnqueue.mock.calls[0][0].config.engineVersion).toBe(BACKTEST_ENGINE_VERSION);
   });
 
   it('force=true skips reuse and always enqueues', async () => {
