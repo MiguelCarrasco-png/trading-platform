@@ -202,6 +202,59 @@ describe("Strategies HTTP API", () => {
     });
   });
 
+  // A mistake is reported to its author when the config is saved, not at start.
+  describe("save-time config validation", () => {
+    const badMinuteReversal = { symbols: ["NVDA"], qtyPerTrade: 0 };
+
+    test("POST /configs rejects an unrunnable config with the strategy's message", async () => {
+      signedInAs();
+      const res = await request(app)
+        .post("/api/strategies/configs")
+        .set("Authorization", "Bearer valid")
+        .send({ strategy_type: "minute_reversal", name: "bad", config: badMinuteReversal });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/^Invalid configuration: .*qtyPerTrade must be a positive whole number/);
+      expect(repositories.insertStrategy).not.toHaveBeenCalled();
+    });
+
+    test("POST /configs still accepts a valid config", async () => {
+      signedInAs("user-1");
+      (repositories.insertStrategy as jest.Mock).mockResolvedValue({ id: "cfg-3", strategy_type: "minute_reversal", name: "ok" });
+      mockInsertStrategyVersion.mockResolvedValue({ id: "ver-1", versionNumber: 1 });
+      const res = await request(app)
+        .post("/api/strategies/configs")
+        .set("Authorization", "Bearer valid")
+        .send({ strategy_type: "minute_reversal", name: "ok", config: { symbols: ["NVDA"], qtyPerTrade: 1, maxPositionQty: 2 } });
+      expect(res.status).toBe(201);
+    });
+
+    test("PUT /configs/:id rejects an unrunnable edit and saves no version", async () => {
+      signedInAs("user-1");
+      mockGetStrategyById.mockResolvedValue({
+        id: "cfg-1", name: "old", strategy_type: "minute_reversal", config: {}, owner_id: "user-1",
+      });
+      const res = await request(app)
+        .put("/api/strategies/configs/cfg-1")
+        .set("Authorization", "Bearer valid")
+        .send({ name: "Updated", config: badMinuteReversal });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("Invalid configuration");
+      expect(review.saveStrategyVersion).not.toHaveBeenCalled();
+    });
+
+    test("a strategy with no validate hook (pairs trading) is saved as before", async () => {
+      signedInAs("user-1");
+      mockGetStrategyById.mockResolvedValue({
+        id: "cfg-1", name: "old", strategy_type: "pairs_trading", config: {}, owner_id: "user-1",
+      });
+      const res = await request(app)
+        .put("/api/strategies/configs/cfg-1")
+        .set("Authorization", "Bearer valid")
+        .send({ name: "Updated", config: {} });
+      expect(res.status).toBe(200);
+    });
+  });
+
   describe("GET /api/strategies/configs/defaults/:type", () => {
     test("returns 200 with default config for pairs_trading", async () => {
       const res = await request(app).get("/api/strategies/configs/defaults/pairs_trading").set("Authorization", "Bearer valid");

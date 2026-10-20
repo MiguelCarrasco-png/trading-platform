@@ -21,7 +21,7 @@ import {
   BeginnerReversalStrategy,
   createBeginnerReversalConfig,
 } from '../../strategies/beginnerReversal/beginnerReversalStrategy';
-import { STRATEGY_FACTORY, STRATEGY_DEFINITIONS } from '../../config/strategyDefaults';
+import { STRATEGY_FACTORY, STRATEGY_DEFINITIONS, configProblem } from '../../config/strategyDefaults';
 import { SymbolStateManager } from '../../core/state/symbolState';
 import { PortfolioStateManager } from '../../core/state/portfolioState';
 import { OrderStateManager } from '../../core/state/orderState';
@@ -130,6 +130,30 @@ describe('BeginnerReversalStrategy', () => {
     expect(() => new BeginnerReversalStrategy(createBeginnerReversalConfig({ qtyPerTrade: 0 }))).toThrow(/qtyPerTrade/);
     expect(() => new BeginnerReversalStrategy(createBeginnerReversalConfig({ qtyPerTrade: 2, maxPositionQty: 1 })))
       .toThrow(/maxPositionQty/);
+  });
+});
+
+describe('beginner_reversal save-time validation', () => {
+  it('accepts a partial config because defaults fill the rest', () => {
+    expect(configProblem('beginner_reversal', { symbols: ['SPY'] })).toBeNull();
+    expect(configProblem('beginner_reversal', {})).toBeNull();
+  });
+
+  it.each([
+    [{ qtyPerTrade: 0 }, /qtyPerTrade/],
+    [{ qtyPerTrade: 1.5 }, /qtyPerTrade/],
+    [{ qtyPerTrade: 2, maxPositionQty: 1 }, /maxPositionQty/],
+    [{ symbols: [] }, /symbols/],
+    [{ symbols: 'SPY, AAPL' }, /symbols/],
+    [{ symbols: ['SPY', ' '] }, /ticker/],
+  ])('reports %j', (config, message) => {
+    expect(configProblem('beginner_reversal', config)).toMatch(message);
+  });
+
+  it('checks minute_reversal with its own validator and leaves pairs_trading unchecked', () => {
+    expect(configProblem('minute_reversal', { qtyPerTrade: 0 })).toMatch(/qtyPerTrade/);
+    expect(configProblem('pairs_trading', {})).toBeNull();
+    expect(configProblem('no_such_type', {})).toBeNull();
   });
 });
 

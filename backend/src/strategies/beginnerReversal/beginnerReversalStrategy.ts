@@ -57,7 +57,12 @@ export function createBeginnerReversalConfig(
 
 /** Throws on a config the strategy cannot trade safely, so a bad one fails at start. */
 export function validateBeginnerReversalConfig(config: BeginnerReversalConfig): void {
-  if (!config.symbols?.length) throw new Error("beginner_reversal: symbols must not be empty");
+  if (!Array.isArray(config.symbols) || config.symbols.length === 0) {
+    throw new Error("beginner_reversal: symbols must be a non-empty list");
+  }
+  if (config.symbols.some((s) => typeof s !== "string" || s.trim() === "")) {
+    throw new Error("beginner_reversal: every symbol must be a non-empty ticker");
+  }
   if (!Number.isInteger(config.qtyPerTrade) || config.qtyPerTrade <= 0) {
     throw new Error(`beginner_reversal: qtyPerTrade must be a positive whole number (got ${config.qtyPerTrade})`);
   }

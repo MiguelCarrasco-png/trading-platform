@@ -16,6 +16,7 @@ import { getStrategyVersionById, insertStrategyVersion, saveStrategyVersion } fr
 import {
   STRATEGY_DEFINITIONS,
   STRATEGY_FACTORY,
+  configProblem,
   isLaunchable,
   launchableDefinitions,
 } from "../../config/strategyDefaults";
@@ -159,7 +160,19 @@ export async function startStrategyRun(req: Request, res: Response): Promise<voi
       maxCapitalPct: Math.min(requestedCap, env.sandboxMaxCapitalPct),
     },
   };
-  const strategy = factory(effectiveConfig);
+  // A saved version can still be unrunnable (saved before validation existed, or
+  // by a strategy without a save-time check). Say so, rather than a generic 500.
+  let strategy;
+  try {
+    strategy = factory(effectiveConfig);
+  } catch (err) {
+    const problem = err instanceof Error ? err.message : String(err);
+    logger.warn("startStrategyRun: config rejected by the strategy", {
+      strategyId: configId, versionId, strategyType, userId: req.user!.id, problem,
+    });
+    res.status(400).json({ error: `This version cannot run: ${problem}`, detail: "Fix the configuration and save a new version." });
+    return;
+  }
 
   await liveRuns.prepare(strategy);
 
@@ -322,6 +335,12 @@ export async function createStrategy(req: Request, res: Response): Promise<void>
     res.status(400).json({ error: `Strategy type ${strategy_type} is not available (status: ${def.status})` });
     return;
   }
+  const problem = configProblem(strategy_type, config);
+  if (problem) {
+    logger.warn("createStrategy: config rejected", { strategy_type, userId: req.user!.id, problem });
+    res.status(400).json({ error: `Invalid configuration: ${problem}` });
+    return;
+  }
   try {
     const strategy = await insertStrategy({ strategy_type, name, config, owner_id: req.user!.id });
 
@@ -367,6 +386,12 @@ export async function updateStrategyConfig(req: Request, res: Response): Promise
     }
     if (req.user!.role !== "lead" && existing.owner_id !== req.user!.id) {
       res.status(403).json({ error: "Only the strategy owner or a lead may edit this strategy" });
+      return;
+    }
+    const problem = configProblem(existing.strategy_type, config);
+    if (problem) {
+      logger.warn("updateStrategyConfig: config rejected", { configId, strategyType: existing.strategy_type, userId: req.user!.id, problem });
+      res.status(400).json({ error: `Invalid configuration: ${problem}` });
       return;
     }
     const version = await saveStrategyVersion({

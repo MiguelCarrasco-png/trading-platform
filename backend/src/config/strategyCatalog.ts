@@ -16,12 +16,13 @@ import type { PairsStrategyConfig } from "../strategies/pairs/pairsTypes";
 import { MinuteReversalStrategy } from "../strategies/minuteReversal/minuteReversalStrategy";
 import {
   createMinuteReversalConfig,
+  validateMinuteReversalConfig,
   DEFAULT_MINUTE_REVERSAL_CONFIG,
   DEFAULT_MINUTE_REVERSAL_SYMBOLS,
 } from "../strategies/minuteReversal/minuteReversalConfig";
 import type { MinuteReversalConfig } from "../strategies/minuteReversal/minuteReversalTypes";
 import { beginnerReversalManifest } from "../strategies/beginnerReversal/manifest";
-import type { StrategyManifest } from "./strategyManifest";
+import { asProblem, type StrategyManifest } from "./strategyManifest";
 
 const pairsManifest: StrategyManifest = {
   type: "pairs_trading",
@@ -57,6 +58,9 @@ const minuteReversalManifest: StrategyManifest = {
   // Saved configs may omit tuning fields; fill them from the defaults.
   create: (config) =>
     new MinuteReversalStrategy(createMinuteReversalConfig(config as Partial<MinuteReversalConfig>)),
+  // The strategy's own check, run at save time instead of only at start.
+  validate: (config) =>
+    asProblem(() => validateMinuteReversalConfig(createMinuteReversalConfig(config as Partial<MinuteReversalConfig>))),
   // No `params`: it is not offered in the frontend picker.
 };
 

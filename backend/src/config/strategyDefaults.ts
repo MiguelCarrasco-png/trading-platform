@@ -57,6 +57,14 @@ export const STRATEGY_DEFINITIONS: Record<string, StrategyDefinition> = Object.f
   ]),
 );
 
+/**
+ * Why a config cannot be traded, or null when it can (or the strategy declares
+ * no check). Call before storing a config so a mistake is reported at save time.
+ */
+export function configProblem(type: string, config: Record<string, unknown>): string | null {
+  return STRATEGY_CATALOG.find((m) => m.type === type)?.validate?.(config) ?? null;
+}
+
 /** True when new configs and runs of this type may be created. */
 export function isLaunchable(type: string): boolean {
   return STRATEGY_DEFINITIONS[type]?.status === "ready";

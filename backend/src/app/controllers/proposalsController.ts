@@ -42,7 +42,7 @@ import {
   updateStrategy,
   StrategyAlreadyLiveError,
 } from "../../adapters/supabase/repositories";
-import { STRATEGY_DEFINITIONS, STRATEGY_FACTORY, isLaunchable } from "../../config/strategyDefaults";
+import { STRATEGY_DEFINITIONS, STRATEGY_FACTORY, configProblem, isLaunchable } from "../../config/strategyDefaults";
 import { env } from "../../config/env";
 import { newId } from "../../utils/ids";
 import { nowMs } from "../../utils/time";
@@ -104,6 +104,12 @@ export async function createVersion(req: Request, res: Response): Promise<void> 
   }
   if (req.user!.role !== "lead" && strategy.owner_id !== req.user!.id) {
     res.status(403).json({ error: "Only the strategy owner or a lead may create a version" });
+    return;
+  }
+  const problem = configProblem(strategy.strategy_type, config);
+  if (problem) {
+    logger.warn("createVersion: config rejected", { strategyId, strategyType: strategy.strategy_type, userId: req.user!.id, problem });
+    res.status(400).json({ error: `Invalid configuration: ${problem}` });
     return;
   }
 

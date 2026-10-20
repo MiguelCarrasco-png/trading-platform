@@ -192,6 +192,28 @@ describe('startStrategyRun: with orchestrator', () => {
     expect(res.status).toHaveBeenCalledWith(400);
   });
 
+  it('returns 400 with the strategy message when a saved version cannot run', async () => {
+    mockGetStrategy.mockResolvedValue({
+      id: 'strat-1', strategy_type: 'minute_reversal', name: 'MR', config: {}, owner_id: TEST_USER.id,
+    });
+    mockGetVersion.mockResolvedValue({ id: 'ver-1', strategyId: 'strat-1', config: { symbols: ['NVDA'], qtyPerTrade: 0 } });
+    const liveRuns = makeLiveRuns();
+    const res = mockRes();
+    await startStrategyRun(
+      ctxReq(
+        { orchestrator: { hasStrategyWithConfigId: jest.fn().mockReturnValue(false) }, liveRuns, executionMode: 'paper' },
+        { body: { strategyId: 'strat-1', versionId: 'ver-1' } },
+      ),
+      res,
+    );
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.stringContaining('qtyPerTrade must be a positive whole number') }),
+    );
+    expect(mockInsertRun).not.toHaveBeenCalled();
+    expect(liveRuns.activate).not.toHaveBeenCalled();
+  });
+
   it('returns 409 when a strategy with the same config ID is already running', async () => {
     const orchestrator = { hasStrategyWithConfigId: jest.fn().mockReturnValue(true) };
     const liveRuns = makeLiveRuns();

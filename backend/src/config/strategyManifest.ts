@@ -54,4 +54,21 @@ export interface StrategyManifest {
    * form (pairs trading) or should not be launchable from the UI yet.
    */
   params?: ParamSpec[];
+  /**
+   * Returns why a saved config cannot be traded, or null when it can. Runs when
+   * a config is saved, so a mistake is reported to its author at once instead
+   * of failing later at start. Receives the config as the client sent it, so
+   * fill missing fields from the defaults before checking. Omit to skip the check.
+   */
+  validate?: (config: Record<string, unknown>) => string | null;
+}
+
+/** Runs a check that throws on a bad config and returns its message, or null if it passes. */
+export function asProblem(check: () => void): string | null {
+  try {
+    check();
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
 }
