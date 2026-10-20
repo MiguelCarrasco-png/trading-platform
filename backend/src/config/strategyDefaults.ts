@@ -1,32 +1,28 @@
 /**
  * config/strategyDefaults.ts
  *
- * Hardcoded strategy type definitions loaded at startup.
- * Each entry carries the algorithm version and a fully-populated default
+ * Lookup tables derived from the strategy catalog (config/strategyCatalog.ts).
+ * Each definition carries the algorithm version and a fully-populated default
  * config that the frontend uses to pre-fill new strategy forms.
  *
  * version tracks the strategy algorithm version, not per-config edit counts.
- * New configs inherit STRATEGY_DEFINITIONS[type].version at creation time.
- * Bump version here when the algorithm changes in a breaking way.
+ * New configs inherit STRATEGY_DEFINITIONS[type].algorithmVersion at creation time.
+ * Bump version in the strategy class when the algorithm changes in a breaking way.
+ *
+ * Add a strategy in strategyCatalog.ts, not here.
  */
 
 import type { StrategyType } from "../types/strategy";
 import type { IStrategy } from "../strategies/base/strategy";
-import { DEFAULT_PAIRS_CONFIG } from "../strategies/pairs/pairsConfig";
-import { PairsStrategy } from "../strategies/pairs/pairsStrategy";
-import type { PairsStrategyConfig } from "../strategies/pairs/pairsTypes";
-import { MinuteReversalStrategy } from "../strategies/minuteReversal/minuteReversalStrategy";
-import {
-  createMinuteReversalConfig,
-  DEFAULT_MINUTE_REVERSAL_CONFIG,
-  DEFAULT_MINUTE_REVERSAL_SYMBOLS,
-} from "../strategies/minuteReversal/minuteReversalConfig";
-import type { MinuteReversalConfig } from "../strategies/minuteReversal/minuteReversalTypes";
+import { STRATEGY_CATALOG } from "./strategyCatalog";
+import type { ParamSpec, StrategyStatus } from "./strategyManifest";
 
 export interface StrategyDefinition {
   type: StrategyType;
   label: string;
   description: string;
+  /** Whether new configs and runs of this type may be created. */
+  status: StrategyStatus;
   /**
    * Current algorithm version sourced directly from the strategy class
    * (e.g. PairsStrategy.VERSION). Never stored in the strategies table —
@@ -34,48 +30,39 @@ export interface StrategyDefinition {
    */
   algorithmVersion: number;
   defaultConfig: Record<string, unknown>;
+  /** Fields for the frontend's generic form; absent for bespoke or hidden forms. */
+  params?: ParamSpec[];
 }
 
 /**
- * Maps each strategy type to a factory function that instantiates the
- * corresponding IStrategy from a raw config object. Used by startStrategyRun
- * to create strategy instances from JSON payloads at runtime.
- *
- * Add a new entry here whenever a new strategy type is introduced.
+ * Maps each strategy type to a factory that instantiates the IStrategy from a
+ * raw config object. Includes EVERY status: restoring a persisted run must work
+ * whatever its type's status is today. Gate new launches with isLaunchable().
  */
-export const STRATEGY_FACTORY: Record<string, (config: Record<string, unknown>) => IStrategy> = {
-  pairs_trading: (config) => new PairsStrategy(config as unknown as PairsStrategyConfig),
-  // Saved configs may omit tuning fields; fill them from the defaults.
-  minute_reversal: (config) =>
-    new MinuteReversalStrategy(createMinuteReversalConfig(config as Partial<MinuteReversalConfig>)),
-};
+export const STRATEGY_FACTORY: Record<string, (config: Record<string, unknown>) => IStrategy> =
+  Object.fromEntries(STRATEGY_CATALOG.map((m) => [m.type, m.create]));
 
-export const STRATEGY_DEFINITIONS: Record<string, StrategyDefinition> = {
-  pairs_trading: {
-    type: "pairs_trading",
-    label: "Pairs Trading",
-    description:
-      "Statistical arbitrage between two correlated instruments using z-score mean reversion.",
-    algorithmVersion: PairsStrategy.VERSION,
-    defaultConfig: {
-      ...DEFAULT_PAIRS_CONFIG,
-      leg1Symbol: "SPY",
-      leg2Symbol: "QQQ",
-      symbols: ["SPY", "QQQ"],
-      name: "Pairs: SPY/QQQ",
+export const STRATEGY_DEFINITIONS: Record<string, StrategyDefinition> = Object.fromEntries(
+  STRATEGY_CATALOG.map((m): [string, StrategyDefinition] => [
+    m.type,
+    {
+      type: m.type,
+      label: m.label,
+      description: m.description,
+      status: m.status,
+      algorithmVersion: m.version,
+      defaultConfig: m.defaultConfig,
+      ...(m.params && { params: m.params }),
     },
-  },
-  minute_reversal: {
-    type: "minute_reversal",
-    label: "Minute Reversal (test)",
-    description:
-      "Order-path test: sells a symbol after its 1-minute bar closes up and buys after it closes down, " +
-      "one fixed share size per bar with a per-symbol position cap.",
-    algorithmVersion: MinuteReversalStrategy.VERSION,
-    defaultConfig: {
-      ...DEFAULT_MINUTE_REVERSAL_CONFIG,
-      symbols: [...DEFAULT_MINUTE_REVERSAL_SYMBOLS],
-      name: "Minute Reversal: large caps",
-    },
-  },
-};
+  ]),
+);
+
+/** True when new configs and runs of this type may be created. */
+export function isLaunchable(type: string): boolean {
+  return STRATEGY_DEFINITIONS[type]?.status === "ready";
+}
+
+/** Definitions the frontend may offer for launching. */
+export function launchableDefinitions(): StrategyDefinition[] {
+  return Object.values(STRATEGY_DEFINITIONS).filter((d) => d.status === "ready");
+}

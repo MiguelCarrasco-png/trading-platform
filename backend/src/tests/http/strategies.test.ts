@@ -4,6 +4,8 @@ import * as repositories from "../../adapters/supabase/repositories";
 import * as review from "../../adapters/supabase/reviewRepositories";
 import { getSupabaseClient } from "../../adapters/supabase/client";
 import { PairsStrategy } from "../../strategies/pairs/pairsStrategy";
+import { BeginnerReversalStrategy } from "../../strategies/beginnerReversal/beginnerReversalStrategy";
+import { STRATEGY_DEFINITIONS, STRATEGY_FACTORY, isLaunchable } from "../../config/strategyDefaults";
 
 jest.mock("../../adapters/supabase/repositories");
 jest.mock("../../adapters/supabase/reviewRepositories");
@@ -147,6 +149,56 @@ describe("Strategies HTTP API", () => {
       expect(res.body).toEqual([
         expect.objectContaining({ id: "cfg-1", name: "My Pairs", algorithmVersion: PairsStrategy.VERSION }),
       ]);
+    });
+  });
+
+  // The release gate: status decides what can be listed and created, never what already runs.
+  describe("strategy status gate", () => {
+    const definition = STRATEGY_DEFINITIONS.beginner_reversal;
+    const original = definition.status;
+    afterEach(() => { definition.status = original; });
+
+    test("GET /configs/types lists ready types and hides planned ones", async () => {
+      signedInAs();
+      definition.status = "planned";
+      const hidden = await request(app).get("/api/strategies/configs/types").set("Authorization", "Bearer valid");
+      expect(hidden.status).toBe(200);
+      expect(hidden.body.map((d: { type: string }) => d.type)).toEqual(
+        expect.arrayContaining(["pairs_trading"]),
+      );
+      expect(hidden.body.map((d: { type: string }) => d.type)).not.toContain("beginner_reversal");
+
+      definition.status = "ready";
+      const shown = await request(app).get("/api/strategies/configs/types").set("Authorization", "Bearer valid");
+      expect(shown.body.find((d: { type: string }) => d.type === "beginner_reversal")).toMatchObject({
+        status: "ready",
+        algorithmVersion: BeginnerReversalStrategy.VERSION,
+        params: expect.arrayContaining([expect.objectContaining({ key: "qtyPerTrade" })]),
+      });
+    });
+
+    test("POST /configs refuses a planned type but accepts it once ready", async () => {
+      signedInAs("user-1");
+      (repositories.insertStrategy as jest.Mock).mockResolvedValue({
+        id: "cfg-2", strategy_type: "beginner_reversal", name: "test",
+      });
+      mockInsertStrategyVersion.mockResolvedValue({ id: "ver-1", versionNumber: 1 });
+      const body = { strategy_type: "beginner_reversal", name: "test", config: { symbols: ["SPY"] } };
+
+      definition.status = "planned";
+      const refused = await request(app).post("/api/strategies/configs").set("Authorization", "Bearer valid").send(body);
+      expect(refused.status).toBe(400);
+      expect(repositories.insertStrategy).not.toHaveBeenCalled();
+
+      definition.status = "ready";
+      const accepted = await request(app).post("/api/strategies/configs").set("Authorization", "Bearer valid").send(body);
+      expect(accepted.status).toBe(201);
+    });
+
+    test("restoring a persisted run still resolves the factory for a non-ready type", () => {
+      definition.status = "retired";
+      expect(STRATEGY_FACTORY.beginner_reversal).toBeInstanceOf(Function);
+      expect(isLaunchable("beginner_reversal")).toBe(false);
     });
   });
 

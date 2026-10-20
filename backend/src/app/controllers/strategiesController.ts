@@ -13,7 +13,12 @@ import {
   StrategyAlreadyLiveError,
 } from "../../adapters/supabase/repositories";
 import { getStrategyVersionById, insertStrategyVersion, saveStrategyVersion } from "../../adapters/supabase/reviewRepositories";
-import { STRATEGY_DEFINITIONS, STRATEGY_FACTORY } from "../../config/strategyDefaults";
+import {
+  STRATEGY_DEFINITIONS,
+  STRATEGY_FACTORY,
+  isLaunchable,
+  launchableDefinitions,
+} from "../../config/strategyDefaults";
 import { insertRunEvent } from "../../adapters/supabase/analyticsRepository";
 import { allocatedCapital } from "../../core/analytics/runPerformance";
 import { env } from "../../config/env";
@@ -116,6 +121,11 @@ export async function startStrategyRun(req: Request, res: Response): Promise<voi
   const factory = STRATEGY_FACTORY[strategyType];
   if (!factory) {
     res.status(400).json({ error: `Unknown strategy type: ${strategyType}` });
+    return;
+  }
+  // Status gates NEW runs only; a run that already exists is restored by type alone.
+  if (!isLaunchable(strategyType)) {
+    res.status(400).json({ error: `Strategy type ${strategyType} is not available for new runs` });
     return;
   }
 
@@ -264,6 +274,15 @@ export async function listStrategies(_req: Request, res: Response): Promise<void
   }
 }
 
+/**
+ * GET /api/strategies/configs/types
+ * The strategy types a member may launch (status "ready"), each with the
+ * metadata and parameter specs the frontend needs to draw its form.
+ */
+export function listStrategyTypes(_req: Request, res: Response): void {
+  res.json(launchableDefinitions());
+}
+
 /** GET /api/strategies/configs/defaults/:type */
 export async function getStrategyDefaults(req: Request, res: Response): Promise<void> {
   const type = String(req.params.type);
@@ -297,6 +316,10 @@ export async function createStrategy(req: Request, res: Response): Promise<void>
   const def = STRATEGY_DEFINITIONS[strategy_type];
   if (!def) {
     res.status(400).json({ error: `Unknown strategy type: ${strategy_type}` });
+    return;
+  }
+  if (def.status !== "ready") {
+    res.status(400).json({ error: `Strategy type ${strategy_type} is not available (status: ${def.status})` });
     return;
   }
   try {
