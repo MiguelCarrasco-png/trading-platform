@@ -74,8 +74,7 @@ const minuteReversalManifest: StrategyManifest = {
 export const STRATEGY_CATALOG: readonly StrategyManifest[] = [
   pairsManifest,
   minuteReversalManifest,
-  // Keep the course answer key out of all pickers, even if its status changes.
-  { ...beginnerReversalManifest, hidden: true },
+  beginnerReversalManifest,
 ];
 
 const seen = new Set<string>();

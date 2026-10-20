@@ -57,9 +57,9 @@ planned entries, with server-derived `actions.save`, `actions.backtest`, and
 those actions and available forms. Non-pairs forms use manifest `params`.
 Request handlers enforce eligibility again; hiding an item is not enforcement.
 
-The catalog currently registers pairs trading and minute reversal as `ready`,
-and Beginner Reversal as `planned` and explicitly hidden. A strategy directory
-by itself is not registration.
+The catalog currently registers pairs trading, minute reversal, and Beginner
+Reversal as `ready`. Beginner Reversal is visible for UI verification and has
+generic form parameters. A strategy directory by itself is not registration.
 
 ## Code and configuration versions
 

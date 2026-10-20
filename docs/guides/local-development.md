@@ -52,6 +52,18 @@ Sign in as `lead@local.test` / `local-development-only`. Use the Supabase addres
 printed by the launcher when ports are remapped. Run `npm run doctor` from a
 second terminal for a read-only health report.
 
+Supabase's optional Logflare/Vector analytics services are disabled locally. This
+avoids the Windows Docker TCP-port `2375` dependency; database, authentication,
+storage, and app features still run normally. Read application logs in the stack
+terminal or with `docker compose -f docker/docker-compose.dev.yml logs --tail 100`.
+Supabase Studio's centralized log explorer is unavailable with analytics disabled.
+If upgrading an already-running stack, stop the old optional containers once:
+`docker stop supabase_vector_shpe-capital-trading-platform supabase_analytics_shpe-capital-trading-platform`.
+
+Repeated HTTP `304 Not Modified` entries are successful cache checks. Pages poll
+for updates, and the browser reuses its cached response when the data is unchanged.
+They do not require a fix; `401` before login is also expected.
+
 Source directories are bind-mounted; dependencies live in Docker volumes. If
 backend edits do not trigger nodemon on Windows, restart the affected services:
 

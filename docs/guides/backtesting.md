@@ -62,8 +62,8 @@ and active membership. The frontend supplies the token automatically.
 }
 ```
 
-This explicit type request can exercise the hidden answer-key implementation;
-it does not make it visible or authorize a trading launch. Factory defaults fill
+This request exercises the same beginner reference currently available in the
+UI as **Beginner Reversal (course)**. Factory defaults fill
 missing strategy settings. Use the dates available in your cache/account.
 
 | Endpoint, relative to API base | Result |

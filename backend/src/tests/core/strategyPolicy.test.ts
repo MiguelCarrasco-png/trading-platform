@@ -28,19 +28,31 @@ describe('strategy eligibility', () => {
     expect(strategyActions({ ...base, status: 'ready', backtestable: false }, { profile: 'shared', executionTarget: 'alpaca-live' }))
       .toMatchObject({ backtest: { allowed: false }, startTrading: { allowed: true } });
   });
-  it('keeps the answer key hidden in every profile, even if released', () => {
-    const original = base.status;
+  it('exposes the released beginner strategy in both profiles with form fields and allowed actions', () => {
+    expect(base.status).toBe('ready');
+    expect(base.hidden).not.toBe(true);
+    for (const profile of ['development', 'shared'] as const) {
+      const definition = visibleStrategyDefinitions({ profile, executionTarget: 'sim' })
+        .find((d) => d.type === 'beginner_reversal');
+      expect(definition).toMatchObject({
+        actions: { save: { allowed: true }, backtest: { allowed: true }, startTrading: { allowed: true } },
+      });
+      expect(definition?.params?.map((p) => p.key)).toEqual(['symbols', 'qtyPerTrade', 'maxPositionQty']);
+    }
+  });
+  it('honors hidden metadata independently of readiness', () => {
+    const original = base.hidden;
     try {
-      base.status = 'ready';
+      base.hidden = true;
       for (const profile of ['development', 'shared'] as const) {
         expect(visibleStrategyDefinitions({ profile, executionTarget: 'sim' }).map((d) => d.type)).not.toContain('beginner_reversal');
       }
-    } finally { base.status = original; }
+    } finally { base.hidden = original; }
   });
 });
 
 describe('shared strategy construction', () => {
-  it('constructs an unreleased answer key through the same factory for backtests', () => {
+  it('constructs the beginner strategy through the same factory for trading and backtests', () => {
     const sc = { type: 'beginner_reversal', symbols: ['SPY'], qtyPerTrade: 2, maxPositionQty: 4 };
     const [backtest] = buildBacktestStrategies({ strategyConfig: sc } as unknown as BacktestConfig);
     const trading = STRATEGY_FACTORY.beginner_reversal(sc);

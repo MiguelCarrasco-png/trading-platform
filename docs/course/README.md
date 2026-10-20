@@ -6,7 +6,7 @@ strategy, release it on the platform, and watch it trade on a paper account.
 - First-time setup: [setup.md](setup.md) (Git, Node.js, Docker, and your own Alpaca paper keys)
 - Learner handout: [lesson-steps.md](lesson-steps.md) (six runnable steps + exercises)
 - Vocabulary: [glossary.md](glossary.md)
-- Answer key: `backend/src/strategies/beginnerReversal/` (status `planned` and explicitly hidden from all pickers)
+- Answer key: `backend/src/strategies/beginnerReversal/` (temporarily `ready` and visible as **Beginner Reversal (course)** for UI verification)
 
 ## The one-diagram explanation (10 min)
 
@@ -40,7 +40,8 @@ The same strategy is available for backtesting in the cloud, but shared trading
 requires `ready`. Explain the distinction between technical capability, release
 status, and where orders go. Real money always requires readiness and lead approval.
 Exercise 4 (`retired`) stops new trading launches while preserving active runs and
-historical backtests. Beginner Reversal remains explicitly hidden as the answer key.
+historical backtests. Beginner Reversal is currently visible and runnable as the
+reference implementation; learners still register their own named strategy.
 
 ## Before class (do this the day before)
 
