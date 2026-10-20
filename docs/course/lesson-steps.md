@@ -112,7 +112,7 @@ export const STRATEGY_CATALOG: readonly StrategyManifest[] = [
 
 **Check it:** restart the backend, open the **Strategies** page, and pick
 **My Reversal** in *Strategy Type*. Click *Save as new configuration*, then
-*Start Latest Saved Version on Paper*. A run appears under *All Runs* and... does
+*Start Selected Version on Paper*. A run appears under *All Runs* and... does
 nothing. That is correct: it is running, and has nothing to say yet.
 
 > The `params` list is what draws the form. You wrote no frontend code.

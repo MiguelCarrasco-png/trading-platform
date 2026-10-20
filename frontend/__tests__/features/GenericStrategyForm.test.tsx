@@ -27,7 +27,14 @@ const configs = vi.hoisted(() => ({
     ],
   },
 }));
-const versions = vi.hoisted(() => ({ list: [{ id: "ver-9" }] as unknown[], none: [] as unknown[], refetch: vi.fn(async () => {}) }));
+const versions = vi.hoisted(() => ({
+  list: [] as unknown[],
+  none: [] as unknown[],
+  loading: false,
+  refetch: vi.fn(async () => {}),
+}));
+const LATEST = { id: "ver-9", versionNumber: 3, changeSummary: "allow 2 shares", createdAt: 1, createdByName: "Ana" };
+const OLDER = { id: "ver-8", versionNumber: 2, changeSummary: "first try", createdAt: 1, createdByName: "Ana" };
 
 vi.mock("../../hooks/useStrategyConfigs", () => ({
   useStrategyConfigs: () => ({
@@ -44,7 +51,7 @@ vi.mock("../../hooks/useStrategyConfigs", () => ({
 vi.mock("../../hooks/useStrategyVersions", () => ({
   useStrategyVersions: (id: string | null) => ({
     versions: id ? versions.list : versions.none,
-    isLoading: false,
+    isLoading: versions.loading,
     error: null,
     refetch: versions.refetch,
   }),
@@ -54,6 +61,8 @@ import GenericStrategyForm from "../../features/strategy/GenericStrategyForm";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  versions.list = [LATEST, OLDER];
+  versions.loading = false;
 });
 
 describe("GenericStrategyForm", () => {
@@ -102,14 +111,34 @@ describe("GenericStrategyForm", () => {
     expect(screen.getByLabelText("Symbols")).toHaveValue("QQQ");
     expect(screen.getByLabelText("Shares per trade")).toHaveValue(2);
 
-    await userEvent.click(screen.getByRole("button", { name: "Start Latest Saved Version on Paper" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start Selected Version on Paper" }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ strategyId: "strat-1", versionId: "ver-9" }));
+  });
+
+  it("runs a version the member picked instead of the newest", async () => {
+    const onSubmit = vi.fn(async () => {});
+    render(<GenericStrategyForm type="beginner_reversal" onSubmit={onSubmit} />);
+    await userEvent.selectOptions(screen.getByLabelText("Configuration"), "strat-1");
+    expect(screen.getByLabelText("Version to run")).toHaveValue("ver-9");
+
+    await userEvent.selectOptions(screen.getByLabelText("Version to run"), "ver-8");
+    expect(screen.getByText(/Running an older version \(v2\); the latest is v3/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Start Selected Version on Paper" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ strategyId: "strat-1", versionId: "ver-8" }));
+  });
+
+  it("does not offer Start until the versions of a saved config have loaded", async () => {
+    versions.loading = true;
+    render(<GenericStrategyForm type="beginner_reversal" onSubmit={vi.fn()} />);
+    await userEvent.selectOptions(screen.getByLabelText("Configuration"), "strat-1");
+    expect(screen.getByRole("button", { name: "Loading versions…" })).toBeDisabled();
   });
 
   it("will not start an unsaved configuration", async () => {
     const onSubmit = vi.fn();
     render(<GenericStrategyForm type="beginner_reversal" onSubmit={onSubmit} />);
-    await userEvent.click(screen.getByRole("button", { name: "Start Latest Saved Version on Paper" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start Selected Version on Paper" }));
     expect(await screen.findByText(/Save this configuration before starting/)).toBeInTheDocument();
     expect(onSubmit).not.toHaveBeenCalled();
   });
@@ -118,7 +147,7 @@ describe("GenericStrategyForm", () => {
     const onSubmit = vi.fn(async () => { throw new Error("Paper sandbox limit reached"); });
     render(<GenericStrategyForm type="beginner_reversal" onSubmit={onSubmit} />);
     await userEvent.selectOptions(screen.getByLabelText("Configuration"), "strat-1");
-    await userEvent.click(screen.getByRole("button", { name: "Start Latest Saved Version on Paper" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start Selected Version on Paper" }));
     expect(await screen.findByText("Paper sandbox limit reached")).toBeInTheDocument();
   });
 });

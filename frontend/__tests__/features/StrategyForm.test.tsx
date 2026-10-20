@@ -93,10 +93,23 @@ describe("StrategyForm — versions and proposals", () => {
     versions.list = [{ id: "ver-3", versionNumber: 3 }];
     await selectSavedConfig(onSubmit);
 
-    fireEvent.submit(screen.getByRole("button", { name: "Start Latest Saved Version on Paper" }).closest("form")!);
+    fireEvent.submit(screen.getByRole("button", { name: "Start Selected Version on Paper" }).closest("form")!);
 
     await waitFor(() => {
       expect(onSubmit).toHaveBeenCalledWith({ strategyId: "strat-1", versionId: "ver-3" });
+    });
+  });
+
+  it("lets the member run an older saved version instead of the newest", async () => {
+    const onSubmit = vi.fn(async () => {});
+    versions.list = [{ id: "ver-3", versionNumber: 3 }, { id: "ver-2", versionNumber: 2 }];
+    await selectSavedConfig(onSubmit);
+
+    await userEvent.selectOptions(screen.getByLabelText("Version to run"), "ver-2");
+    fireEvent.submit(screen.getByRole("button", { name: "Start Selected Version on Paper" }).closest("form")!);
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith({ strategyId: "strat-1", versionId: "ver-2" });
     });
   });
 

@@ -19,6 +19,7 @@ import type { ParamSpec, RiskBudget, StrategyType } from "../../types/strategy";
 import { useStrategyConfigs } from "../../hooks/useStrategyConfigs";
 import { useStrategyVersions } from "../../hooks/useStrategyVersions";
 import RiskBudgetSection, { type RiskBudgetState } from "../shared/RiskBudgetSection";
+import VersionSelect from "./VersionSelect";
 
 interface Props {
   type: StrategyType;
@@ -78,7 +79,12 @@ function budgetFrom(state: RiskBudgetState): RiskBudget {
 export default function GenericStrategyForm({ type, onSubmit }: Props) {
   const { strategies, definition, isLoading, save, update } = useStrategyConfigs(type);
   const [selectedId, setSelectedId] = useState<string>("new");
-  const { versions, refetch: refetchVersions } = useStrategyVersions(selectedId !== "new" ? selectedId : null);
+  const { versions, isLoading: versionsLoading, refetch: refetchVersions } = useStrategyVersions(
+    selectedId !== "new" ? selectedId : null,
+  );
+  // Newest unless the member picked an older one; cleared whenever the config changes or is saved.
+  const [pickedVersionId, setPickedVersionId] = useState<string | null>(null);
+  const runVersion = versions.find((v) => v.id === pickedVersionId) ?? versions[0];
 
   // What the user changed on top of the selected config; cleared when the selection changes.
   const [edits, setEdits] = useState<Record<string, unknown>>({});
@@ -110,6 +116,7 @@ export default function GenericStrategyForm({ type, onSubmit }: Props) {
     setIsSavingNew(false);
     setError(null);
     setNotice(null);
+    setPickedVersionId(null);
     resetEdits();
   };
 
@@ -143,6 +150,7 @@ export default function GenericStrategyForm({ type, onSubmit }: Props) {
   const handleSaveNew = withValidConfig(async (config) => {
     const created = await save(newName.trim() || name, config);
     setSelectedId(created.id);
+    setPickedVersionId(null);
     setIsSavingNew(false);
     setNewName("");
     resetEdits();
@@ -152,6 +160,7 @@ export default function GenericStrategyForm({ type, onSubmit }: Props) {
   const handleSaveChanges = withValidConfig(async (config) => {
     const version = await update(selectedId, name, config, changeSummary.trim() || undefined);
     setChangeSummary("");
+    setPickedVersionId(null);
     resetEdits();
     setNotice(`Saved as v${version.versionNumber}. It is now available for paper trading.`);
     await refetchVersions();
@@ -165,15 +174,14 @@ export default function GenericStrategyForm({ type, onSubmit }: Props) {
       setError("Save this configuration before starting a paper sandbox.");
       return;
     }
-    const latest = versions[0];
-    if (!latest) {
+    if (!runVersion) {
       setError("This strategy has no saved version to run.");
       return;
     }
     setIsStarting(true);
     try {
-      await onSubmit({ strategyId: selectedId, versionId: latest.id });
-      setNotice("Started. Watch it under All Runs.");
+      await onSubmit({ strategyId: selectedId, versionId: runVersion.id });
+      setNotice(`Started v${runVersion.versionNumber}. Watch it under All Runs.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start the strategy");
     } finally {
@@ -220,6 +228,7 @@ export default function GenericStrategyForm({ type, onSubmit }: Props) {
             />
           )}
         </Field>
+        {selectedId !== "new" && <VersionSelect versions={versions} value={pickedVersionId} onChange={setPickedVersionId} />}
       </div>
 
       <div className="grid grid-cols-2 gap-3 rounded-md border border-zinc-200 p-3 dark:border-zinc-700">
@@ -289,10 +298,10 @@ export default function GenericStrategyForm({ type, onSubmit }: Props) {
 
         <button
           type="submit"
-          disabled={isStarting}
+          disabled={isStarting || (selectedId !== "new" && versionsLoading)}
           className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900"
         >
-          {isStarting ? "Starting…" : "Start Latest Saved Version on Paper"}
+          {isStarting ? "Starting…" : selectedId !== "new" && versionsLoading ? "Loading versions…" : "Start Selected Version on Paper"}
         </button>
       </div>
     </form>
