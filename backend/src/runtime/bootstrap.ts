@@ -50,7 +50,8 @@ import { SimulatedExecutionSink } from "../core/execution/simulatedExecution";
 import { LiveQuoteFills, simExecution } from "../core/execution/liveQuoteFills";
 import type { ExecutionConfig } from "../core/execution/quoteFillModel";
 import { BrokerPreflightError, runBrokerPreflight } from "../core/broker/brokerPreflight";
-import { AlpacaClockHours, alwaysOpen, type AlpacaClock } from "../core/market/marketHours";
+import { AlpacaClockHours, alwaysOpen, type AlpacaClock, type MarketHours } from "../core/market/marketHours";
+import { StrategyDiagnostics } from "../core/live/strategyDiagnostics";
 import { findBrokerAccount, registerBrokerAccount } from "../adapters/supabase/brokerAccountRepository";
 import { PROTECTED_BROKER_ACCOUNTS } from "../config/protectedAccounts";
 import { AlpacaBroker } from "../adapters/alpaca/alpacaBroker";
@@ -309,6 +310,8 @@ export async function bootstrapRuntime(config: RuntimeConfig): Promise<void> {
   } else {
     riskEngine.setMarketHours(alwaysOpen);
   }
+  // The same hours the risk engine uses, so the data watchdog stays quiet when the market is closed.
+  const sessionHours: MarketHours = clockHours ?? alwaysOpen;
 
   const orchestrator = new Orchestrator(
     eventBus,
@@ -562,6 +565,24 @@ export async function bootstrapRuntime(config: RuntimeConfig): Promise<void> {
   });
   rejections.start();
 
+  // Terminal and run-timeline warnings for the silent failures: blocked or
+  // rejected orders, and symbols that never produce data.
+  const diagnostics = new StrategyDiagnostics(
+    {
+      eventBus,
+      symbolState,
+      strategies: () => orchestrator.registeredStrategies(),
+      marketHours: sessionHours,
+      recordRunEvent: runEvent,
+      lookupOrder: (orderId) => orderState.getOrder(orderId),
+    },
+    {
+      noDataMs: env.diagnosticsNoDataSeconds * 1000,
+      logWindowMs: env.diagnosticsLogWindowSeconds * 1000,
+    },
+  );
+  diagnostics.start();
+
   // Every signal and what became of it (sent / blocked / refused / no order).
   const signals = new SignalRecorder({ insert: insertSignals, setOutcome: setSignalOutcome, brokerAccount });
   signals.start();
@@ -651,6 +672,7 @@ export async function bootstrapRuntime(config: RuntimeConfig): Promise<void> {
     logger.warn(`bootstrap: shutting down [${mode} mode]`);
     clearInterval(snapshotTimer);
     clearInterval(leaseTimer);
+    diagnostics.stop();
     orchestrator.stop();
     liveFills?.stop();
     marketDataAdapter.disconnect();

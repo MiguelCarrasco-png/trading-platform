@@ -103,13 +103,27 @@ export class BeginnerReversalStrategy extends BaseStrategy {
     this.lastBar.set(symbol, { ts: bar.ts, close: bar.close });
 
     // The first bar we see is only a baseline to compare the next one against.
-    if (!prev || bar.close === prev.close) return null;
+    if (!prev) {
+      logger.debug(`beginner_reversal: ${symbol} first bar (close ${bar.close}) is only a baseline, no trade`);
+      return null;
+    }
+    if (bar.close === prev.close) {
+      logger.debug(`beginner_reversal: ${symbol} close unchanged at ${bar.close}, no trade`);
+      return null;
+    }
 
     const side = bar.close > prev.close ? "sell" : "buy";
     const { qtyPerTrade, maxPositionQty } = this.reversalConfig;
     const position = context.portfolioState.getPosition(symbol)?.qty ?? 0;
     const after = position + (side === "buy" ? qtyPerTrade : -qtyPerTrade);
-    if (Math.abs(after) > maxPositionQty) return null;
+    if (Math.abs(after) > maxPositionQty) {
+      // The most common "why is it not trading?": the position cap is already used up.
+      logger.info(
+        `beginner_reversal: ${symbol} wanted to ${side} ${qtyPerTrade} but holding ${position} would become ` +
+          `${after}, past the cap of ${maxPositionQty}. Skipped. (Raise maxPositionQty to allow more.)`,
+      );
+      return null;
+    }
 
     logger.info(
       `beginner_reversal: ${symbol} closed ${side === "sell" ? "UP" : "DOWN"} ` +

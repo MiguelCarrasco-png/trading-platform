@@ -22,6 +22,7 @@ import {
   createBeginnerReversalConfig,
 } from '../../strategies/beginnerReversal/beginnerReversalStrategy';
 import { STRATEGY_FACTORY, STRATEGY_DEFINITIONS, configProblem } from '../../config/strategyDefaults';
+import { logger } from '../../utils/logger';
 import { SymbolStateManager } from '../../core/state/symbolState';
 import { PortfolioStateManager } from '../../core/state/portfolioState';
 import { OrderStateManager } from '../../core/state/orderState';
@@ -110,6 +111,16 @@ describe('BeginnerReversalStrategy', () => {
     onBar(bar('SPY', 0, 100));
     expect(onBar(bar('SPY', 1, 101))).toBeNull();
     expect(onBar(bar('SPY', 2, 100))).toMatchObject({ direction: 'close_short', qty: 1 });
+  });
+
+  it('says why it skipped a trade when the position cap is used up', () => {
+    const info = jest.spyOn(logger, 'info').mockImplementation(() => {});
+    const { onBar, fill } = setup({ maxPositionQty: 1 });
+    fill('SPY', 'sell', 1);
+    onBar(bar('SPY', 0, 100));
+    expect(onBar(bar('SPY', 1, 101))).toBeNull();
+    expect(info).toHaveBeenCalledWith(expect.stringMatching(/SPY wanted to sell 1 .* cap of 1. Skipped/));
+    info.mockRestore();
   });
 
   it('stays silent until started', () => {

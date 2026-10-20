@@ -181,6 +181,18 @@ export class Orchestrator {
     return this.strategies.has(strategyId);
   }
 
+  /**
+   * Every registered strategy with its registry key (the strategy_runs id for a
+   * launched run). Read-only, for diagnostics; not used on the event path.
+   */
+  registeredStrategies(): Array<{ key: string; runId?: string; strategy: IStrategy }> {
+    return [...this.strategies.entries()].map(([key, strategy]) => ({
+      key,
+      strategy,
+      ...(this._runKeys.has(key) ? { runId: key } : {}),
+    }));
+  }
+
   /** Returns true if any registered strategy was launched from the given config ID. */
   hasStrategyWithConfigId(configId: string): boolean {
     for (const strategy of this.strategies.values()) {

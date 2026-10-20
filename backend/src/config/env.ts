@@ -136,6 +136,10 @@ export const env = {
   runLeaseSeconds: optionalNumber("RUN_LEASE_SECONDS", 90),
   /** evaluate() errors in a row before a live strategy is auto-disabled. */
   maxConsecutiveStrategyErrors: optionalNumber("MAX_CONSECUTIVE_STRATEGY_ERRORS", 5),
+  /** Seconds without data for a strategy's symbol (market open) before the runner warns about it. */
+  diagnosticsNoDataSeconds: optionalNumber("DIAGNOSTICS_NO_DATA_SECONDS", 300),
+  /** A repeated blocked or rejected order is logged once per this many seconds, with a count of the rest. */
+  diagnosticsLogWindowSeconds: optionalNumber("DIAGNOSTICS_LOG_WINDOW_SECONDS", 60),
   /** Maximum share of the paper book available to a self-service sandbox run. */
   sandboxMaxCapitalPct: optionalNumber("SANDBOX_MAX_CAPITAL_PCT", 0.05),
   /** Maximum concurrently running paper sandboxes owned by one member. */

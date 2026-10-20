@@ -63,6 +63,12 @@ minute reversal) are declared inline in `strategyCatalog.ts` rather than gaining
 manifest file that would force a bump. New strategies keep their manifest in their own
 folder; it is part of their first version, so no bump is needed.
 
+## Make "why didn't it trade?" answerable
+
+Log the reason when a guard you wrote suppresses a trade (info), and routine skips at debug. See
+[troubleshooting](troubleshooting-strategies.md#for-strategy-authors). A manifest `validate()` hook (optional) rejects an
+unrunnable config when it is saved instead of when it is started.
+
 ## What a planned strategy still costs
 
 `planned` stops a strategy being launched, not compiled: its code is imported by the

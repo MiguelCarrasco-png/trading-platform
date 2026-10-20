@@ -77,6 +77,13 @@ are already running keep running.
   created by the repo; they are a one-time job for the instructor.)
 - Hand out the glossary on paper.
 
+## When something doesn't work
+
+Point learners at [Is my strategy doing what I expect?](../guides/troubleshooting-strategies.md). The short
+version for the lesson: *read the backend terminal first*. It says when a symbol has no data, when an order was
+blocked and by which check, and (in Steps 3–5) what the strategy decided and why. For the position-cap case, set
+`LOG_LEVEL=debug` to also see the "first bar" and "unchanged close" lines.
+
 ## What this lesson deliberately skips
 
 Backtesting, risk limits, order types, and the review/approval workflow for going
