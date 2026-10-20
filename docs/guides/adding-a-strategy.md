@@ -26,6 +26,17 @@ The reference implementation is `backend/src/strategies/beginnerReversal/`.
 | `create(config)` | Builds the strategy from a saved config; fill missing fields from defaults here |
 | `params` | Optional. Fields for the generic form (`number`, `text`, `symbols`, `boolean`). Omit for a strategy with a bespoke form, or one that should not be offered in the UI |
 
+## Two things the manifest does not cover
+
+- **Decision clock.** Declare `readonly triggers: readonly MarketEventKind[]` on the strategy
+  (pairs trading and `beginnerReversal` use `["bar"]`). The orchestrator only calls
+  `evaluate()` for those event kinds, live and in backtests. Omit it and the strategy is called on
+  every quote, trade and bar, and must itself avoid counting one observation twice.
+- **Backtesting.** Being `ready` makes a strategy launchable on paper; it does not make it
+  backtestable. The backtest engine builds strategies from `BACKTESTABLE_TYPES` and
+  `buildBacktestStrategies` in `backend/src/core/backtest/strategyFactory.ts`, which today
+  only knows pairs trading.
+
 ## Status: a gate on new launches only
 
 | Status | Picker | Save a config | Start / approve a run | Existing runs |

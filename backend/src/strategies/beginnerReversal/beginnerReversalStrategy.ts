@@ -6,8 +6,9 @@
  * share; when it closes DOWN, buy one share. Do nothing if it did not move.
  * A position cap stops a long streak of up (or down) bars from piling up.
  *
- * The orchestrator calls evaluate() on every quote, trade and bar, so the
- * strategy remembers the last bar it handled and only decides on a NEW one.
+ * The strategy declares it triggers on bars only, so evaluate() runs once per
+ * arriving bar. It still remembers the last bar it handled, so a bar that is
+ * delivered twice is never decided on twice.
  *
  * Inputs:  EvaluationContext (latest bar per symbol, current position).
  * Outputs: StrategySignal for qtyPerTrade shares, or null.
@@ -18,6 +19,7 @@ import { newId } from "../../utils/ids";
 import { logger } from "../../utils/logger";
 import type { EvaluationContext } from "../base/strategy";
 import type { BaseStrategyConfig, SignalDirection, StrategySignal, StrategyType } from "../../types/strategy";
+import type { MarketEventKind } from "../../types/market";
 
 export interface BeginnerReversalConfig extends BaseStrategyConfig {
   type: "beginner_reversal";
@@ -71,6 +73,8 @@ export class BeginnerReversalStrategy extends BaseStrategy {
   /** Bump when the signal logic changes (CI enforces it). */
   static readonly VERSION = 1;
   readonly version = BeginnerReversalStrategy.VERSION;
+  /** Decide only when a bar arrives; quotes and trades never call evaluate(). */
+  readonly triggers: readonly MarketEventKind[] = ["bar"];
 
   /** The last bar we decided on, per symbol. */
   private readonly lastBar = new Map<string, { ts: number; close: number }>();
@@ -88,7 +92,7 @@ export class BeginnerReversalStrategy extends BaseStrategy {
     const bar = context.symbolState.get(symbol)?.latestBar;
     if (!bar) return null;
 
-    // Quotes and trades call evaluate() between bars; only a NEW bar is a decision.
+    // Only a NEW bar is a decision.
     const prev = this.lastBar.get(symbol);
     if (prev && bar.ts <= prev.ts) return null;
     this.lastBar.set(symbol, { ts: bar.ts, close: bar.close });

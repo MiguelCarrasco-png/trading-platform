@@ -42,24 +42,30 @@ are already running keep running.
 
 ## Before class (do this the day before)
 
-1. **Paper only.** The Strategies page starts paper sandboxes only. Give each learner
-   (or each pair) their own Alpaca paper account if they run their own stack; the free
-   data plan allows **one data stream per account**, so two stacks on one account will
-   fight over it.
-2. **Market hours.** Bars arrive once a minute while the market is open (09:30–16:00
-   ET, weekdays). Outside those hours the strategy runs but has nothing to react to.
-   Plan the live portion for market hours, or pre-record the "watch it trade" moment
-   as a fallback.
-3. **Restarts.** After you edit backend code you must restart the backend. With
-   `docker-compose.dev.yml` on Windows, edits on the host do not trigger nodemon in
-   the container, so restart the container yourself (`docker compose restart <service>`).
-   Rehearse this; a reload that doesn't fire in front of a class is the most common
-   stumble. A run left running is adopted again automatically after the restart.
-4. **Sandbox limits.** Each member has a cap on active paper runs and a capital cap.
-   Stop old runs before class.
-5. **Keep the machine awake** and check Docker is up before learners arrive.
-6. **Dry-run the steps** yourself once. Every code block in `lesson-steps.md` was
-   compiled step by step, but your environment is the one that matters.
+1. **Run it locally, in sim.** Each learner (or pair) runs their own stack: `npm run dev:stack`
+   ([local development](../guides/local-development.md)), or the
+   [no-Docker path](../guides/local-development-no-docker.md) on a locked-down laptop. The
+   paper runner starts with `EXECUTION_TARGET=sim`, which fills orders in a local book and
+   needs **no Alpaca account**. Nobody shares the club account, and nobody fights over
+   Alpaca's one-data-stream-per-account limit.
+2. **Seed the market data.** With no keys the runner replays cached 1-minute bars (default:
+   the last five days). Run `npm run data:pull` once per machine. The replay runs at real
+   speed by default (one bar per minute), which is too slow for a lesson: set
+   `REPLAY_SPEED=60` (or higher) in `backend/.env`, and `REPLAY_FROM`/`REPLAY_TO` to pick a
+   day with plenty of movement. This also makes the lesson work outside market hours.
+   Learners with their own free Alpaca data key can add `LOCAL_STREAM_DATA=1` to trade the live
+   IEX stream instead (market hours only).
+3. **Restarts.** After you edit backend code you must restart the backend. With the Docker
+   stack on Windows, edits on the host may not trigger nodemon in the container, so be ready
+   to restart the container yourself (`docker compose restart <service>`). Rehearse this; a
+   reload that doesn't fire in front of a class is the most common stumble. A run left
+   running is adopted again automatically after the restart.
+4. **Sandbox limits.** Each member has a cap on active sandbox runs and a capital cap. Stop old
+   runs before class.
+5. **Check Docker is up** (and the machine stays awake) before learners arrive.
+6. **Dry-run the steps** yourself once, on the replay settings you will teach with. Every code
+   block in `lesson-steps.md` was compiled step by step, but your environment is the one that
+   matters.
 
 ## Making it easy to follow along
 

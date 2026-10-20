@@ -19,8 +19,9 @@ Each file below is shown in full. Paths are from the repo root. Lines marked
 ## Step 1: An empty strategy
 
 A strategy is a class with one method, `evaluate()`. The platform calls it every
-time market data arrives. It returns a **signal** ("do this") or `null` ("do
-nothing"). For now it always says nothing.
+time a new 1-minute bar arrives (that is what the `triggers` line asks for). It
+returns a **signal** ("do this") or `null` ("do nothing"). For now it always says
+nothing.
 
 First, tell the platform the new type's name. In `backend/src/types/strategy.ts`,
 add one line to the `StrategyType` list:
@@ -37,6 +38,7 @@ Create `backend/src/strategies/myReversal/myReversalStrategy.ts`:
 import { BaseStrategy } from "../base/strategy";
 import type { EvaluationContext } from "../base/strategy";
 import type { BaseStrategyConfig, StrategySignal, StrategyType } from "../../types/strategy";
+import type { MarketEventKind } from "../../types/market";
 
 export interface MyReversalConfig extends BaseStrategyConfig {
   type: "my_reversal";
@@ -46,6 +48,7 @@ export class MyReversalStrategy extends BaseStrategy {
   readonly type: StrategyType = "my_reversal";
   static readonly VERSION = 1;
   readonly version = MyReversalStrategy.VERSION;
+  readonly triggers: readonly MarketEventKind[] = ["bar"]; // call evaluate() only when a bar arrives
 
   constructor(readonly myConfig: MyReversalConfig) {
     super(myConfig);
@@ -118,8 +121,9 @@ nothing. That is correct: it is running, and has nothing to say yet.
 
 ## Step 3: Notice a new bar
 
-`evaluate()` is called on every quote and trade too, not only once a minute. We
-remember the last bar we looked at, and only act when a **new** one arrives.
+`evaluate()` is called once per arriving bar. We still remember the last bar we
+looked at, and only act when a **new** one arrives, so a bar that is ever delivered
+twice is not counted twice.
 
 ```ts
 // backend/src/strategies/myReversal/myReversalStrategy.ts
@@ -127,6 +131,7 @@ import { BaseStrategy } from "../base/strategy";
 import { logger } from "../../utils/logger"; // CHANGED
 import type { EvaluationContext } from "../base/strategy";
 import type { BaseStrategyConfig, StrategySignal, StrategyType } from "../../types/strategy";
+import type { MarketEventKind } from "../../types/market";
 
 export interface MyReversalConfig extends BaseStrategyConfig {
   type: "my_reversal";
@@ -136,6 +141,7 @@ export class MyReversalStrategy extends BaseStrategy {
   readonly type: StrategyType = "my_reversal";
   static readonly VERSION = 1;
   readonly version = MyReversalStrategy.VERSION;
+  readonly triggers: readonly MarketEventKind[] = ["bar"]; // call evaluate() only when a bar arrives
 
   /** The last bar we looked at, per symbol. */ // CHANGED (this and everything below)
   private readonly lastBar = new Map<string, { ts: number; close: number }>();
@@ -163,8 +169,9 @@ export class MyReversalStrategy extends BaseStrategy {
 
 **Check it:** restart the backend (see *Before class* in the README). A run left
 running is adopted again automatically, now using your new code; if you stopped it,
-start it again. Watch the backend terminal: during market hours you will see one
-line per symbol per minute.
+start it again. Watch the backend terminal: you will see one line per symbol per
+bar (replayed bars arrive fast when `REPLAY_SPEED` is raised; live bars arrive once a
+minute during market hours).
 
 ---
 
@@ -179,6 +186,7 @@ import { BaseStrategy } from "../base/strategy";
 import { logger } from "../../utils/logger";
 import type { EvaluationContext } from "../base/strategy";
 import type { BaseStrategyConfig, StrategySignal, StrategyType } from "../../types/strategy";
+import type { MarketEventKind } from "../../types/market";
 
 export interface MyReversalConfig extends BaseStrategyConfig {
   type: "my_reversal";
@@ -188,6 +196,7 @@ export class MyReversalStrategy extends BaseStrategy {
   readonly type: StrategyType = "my_reversal";
   static readonly VERSION = 1;
   readonly version = MyReversalStrategy.VERSION;
+  readonly triggers: readonly MarketEventKind[] = ["bar"]; // call evaluate() only when a bar arrives
 
   private readonly lastBar = new Map<string, { ts: number; close: number }>();
 
@@ -238,6 +247,7 @@ import { BaseStrategy } from "../base/strategy";
 import { logger } from "../../utils/logger";
 import type { EvaluationContext } from "../base/strategy";
 import type { BaseStrategyConfig, SignalDirection, StrategySignal, StrategyType } from "../../types/strategy";
+import type { MarketEventKind } from "../../types/market";
 
 const MAX_POSITION = 1; // CHANGED: most shares we will hold, long or short
 
@@ -249,6 +259,7 @@ export class MyReversalStrategy extends BaseStrategy {
   readonly type: StrategyType = "my_reversal";
   static readonly VERSION = 2; // CHANGED: the logic changed, so the version goes up
   readonly version = MyReversalStrategy.VERSION;
+  readonly triggers: readonly MarketEventKind[] = ["bar"]; // call evaluate() only when a bar arrives
 
   private readonly lastBar = new Map<string, { ts: number; close: number }>();
 

@@ -121,6 +121,10 @@ describe('BeginnerReversalStrategy', () => {
     })).toBeNull();
   });
 
+  it('asks to be called on bars only', () => {
+    expect(setup().strategy.triggers).toEqual(['bar']);
+  });
+
   it('rejects configs it cannot trade safely', () => {
     expect(() => new BeginnerReversalStrategy(createBeginnerReversalConfig({ symbols: [] }))).toThrow(/symbols/);
     expect(() => new BeginnerReversalStrategy(createBeginnerReversalConfig({ qtyPerTrade: 0 }))).toThrow(/qtyPerTrade/);
